@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/feat/jpkkenvideker-desktop-app
+
+jobs:
+  frontend:
+    name: TypeScript y tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  rust:
+    name: Tests de Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar dependencias de sistema (Tauri en Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - name: Crear sidecars de prueba
+        run: |
+          mkdir -p src-tauri/binaries
+          for b in yt-dlp ffmpeg ffprobe deno; do
+            printf '#!/bin/sh\nexit 0\n' > "src-tauri/binaries/$b-x86_64-unknown-linux-gnu"
+            chmod +x "src-tauri/binaries/$b-x86_64-unknown-linux-gnu"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test

@@ -42,6 +42,13 @@ export interface SearchResult {
 
 export type RingtonePreset = "iphone" | "android";
 
+export interface AppUpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  downloadUrl: string;
+}
+
 export interface RingtoneRequest {
   inputPath: string;
   outputDir: string;
@@ -64,8 +71,11 @@ export interface MediaInfo {
   resolutions: number[];
 }
 
+import type { Lang } from "./i18n";
+
 export interface UserSettings {
   theme: "dark" | "light";
+  language: Lang;
   downloadDir: string;
   kind: MediaKind;
   videoFormat: "mp4" | "mkv" | "webm";

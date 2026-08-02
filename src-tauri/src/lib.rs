@@ -16,6 +16,9 @@ use tauri_plugin_shell::{
 use url::Url;
 
 const YT_DLP_RELEASE_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+const APP_RELEASE_API: &str =
+    "https://api.github.com/repos/jpkken1979/JpkkenVideker/releases/latest";
+const APP_RELEASE_PAGE: &str = "https://github.com/jpkken1979/JpkkenVideker/releases/latest";
 const UPDATE_USER_AGENT: &str = "JpkkenVideker/0.1.0";
 
 #[derive(Default)]
@@ -49,6 +52,15 @@ struct EngineUpdateInfo {
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateInfo {
+    current_version: String,
+    latest_version: String,
+    update_available: bool,
+    download_url: String,
 }
 
 #[derive(Serialize)]
@@ -805,6 +817,34 @@ async fn analyze_url(
     Ok(media_from_json(value, &url))
 }
 
+fn normalize_version(tag: &str) -> String {
+    tag.trim().trim_start_matches(['v', 'V']).to_string()
+}
+
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<AppUpdateInfo, String> {
+    let current_version = app.package_info().version.to_string();
+    let client = download_client()?;
+    let release = client
+        .get(APP_RELEASE_API)
+        .send()
+        .await
+        .map_err(|error| format!("No se pudo consultar la actualización: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("GitHub rechazó la consulta de actualización: {error}"))?
+        .json::<GithubRelease>()
+        .await
+        .map_err(|error| format!("La respuesta de actualización no es válida: {error}"))?;
+    let latest_version = normalize_version(&release.tag_name);
+    let update_available = !latest_version.is_empty() && latest_version != current_version;
+    Ok(AppUpdateInfo {
+        current_version,
+        latest_version,
+        update_available,
+        download_url: APP_RELEASE_PAGE.to_string(),
+    })
+}
+
 #[tauri::command]
 async fn search_media(
     app: AppHandle,
@@ -1506,6 +1546,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(DownloadManager::default())
         .invoke_handler(tauri::generate_handler![
@@ -1516,7 +1557,8 @@ pub fn run() {
             update_engine,
             start_download,
             cancel_download,
-            create_ringtone
+            create_ringtone,
+            check_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running JpkkenVideker");
