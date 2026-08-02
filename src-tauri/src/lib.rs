@@ -100,6 +100,17 @@ struct DownloadRequest {
     avoid_duplicates: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RingtoneRequest {
+    input_path: String,
+    output_dir: String,
+    start_seconds: f64,
+    duration_seconds: f64,
+    preset: String,
+    fade: bool,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 enum DownloadEvent {
@@ -517,8 +528,10 @@ async fn get_app_status(app: AppHandle) -> Result<AppStatus, String> {
     };
     let default_download_dir = app
         .path()
-        .download_dir()
-        .map_err(|error| format!("No se encontró la carpeta Descargas: {error}"))?
+        .document_dir()
+        .map(|documents| documents.join("JpkkenVideker"))
+        .or_else(|_| app.path().download_dir())
+        .map_err(|error| format!("No se encontró una carpeta de destino: {error}"))?
         .to_string_lossy()
         .to_string();
 
@@ -950,6 +963,126 @@ fn strategy_label(strategy: CompatibilityStrategy) -> &'static str {
     }
 }
 
+fn sanitize_file_stem(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric()
+                || matches!(character, ' ' | '-' | '_' | '(' | ')' | '.' | ',' | '\'')
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem: String = cleaned.trim().trim_matches('.').chars().take(80).collect();
+    if stem.is_empty() {
+        "tono".to_string()
+    } else {
+        stem
+    }
+}
+
+fn ringtone_args(
+    request: &RingtoneRequest,
+    tones_dir: &Path,
+) -> Result<(Vec<String>, PathBuf), String> {
+    if !request.start_seconds.is_finite() || request.start_seconds < 0.0 {
+        return Err("El inicio del tono no es válido.".to_string());
+    }
+    if !request.duration_seconds.is_finite() {
+        return Err("La duración del tono no es válida.".to_string());
+    }
+    let duration = request.duration_seconds.clamp(5.0, 40.0);
+    let (codec_args, extension): (&[&str], &str) = match request.preset.as_str() {
+        "iphone" => (&["-c:a", "aac", "-b:a", "192k", "-f", "ipod"], "m4r"),
+        "android" => (&["-c:a", "libmp3lame", "-b:a", "192k"], "mp3"),
+        _ => return Err("El tipo de tono no es compatible.".to_string()),
+    };
+    let stem = Path::new(&request.input_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tono");
+    let file_name = format!(
+        "{} (tono {}s).{extension}",
+        sanitize_file_stem(stem),
+        duration.round() as u32
+    );
+    let output_path = tones_dir.join(file_name);
+
+    let mut args = vec![
+        "-y".to_string(),
+        "-ss".to_string(),
+        format!("{:.2}", request.start_seconds),
+        "-t".to_string(),
+        format!("{duration:.2}"),
+        "-i".to_string(),
+        request.input_path.clone(),
+        "-vn".to_string(),
+        "-ar".to_string(),
+        "44100".to_string(),
+    ];
+    if request.fade {
+        let fade_out_start = (duration - 1.5).max(0.0);
+        args.extend([
+            "-af".to_string(),
+            format!("afade=t=in:st=0:d=0.3,afade=t=out:st={fade_out_start:.2}:d=1.5"),
+        ]);
+    }
+    args.extend(codec_args.iter().map(|value| value.to_string()));
+    args.push(output_path.to_string_lossy().to_string());
+    Ok((args, output_path))
+}
+
+#[tauri::command]
+async fn create_ringtone(app: AppHandle, request: RingtoneRequest) -> Result<String, String> {
+    if !Path::new(&request.input_path).is_file() {
+        return Err("No se encontró el archivo original. Descárgalo de nuevo.".to_string());
+    }
+    let ffmpeg = bundled_binary_path("ffmpeg");
+    if !ffmpeg.exists() {
+        return Err(
+            "Falta el componente ffmpeg. Reinstala JpkkenVideker o ejecuta npm run sidecars."
+                .to_string(),
+        );
+    }
+    let tones_dir = PathBuf::from(&request.output_dir).join("Tonos");
+    fs::create_dir_all(&tones_dir)
+        .map_err(|error| format!("No se pudo preparar la carpeta de tonos: {error}"))?;
+    let (args, output_path) = ringtone_args(&request, &tones_dir)?;
+    let output = app
+        .shell()
+        .command(&ffmpeg)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| format!("No se pudo iniciar ffmpeg: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Err(format!("No se pudo crear el tono. {detail}"));
+    }
+    if !output_path.is_file() {
+        return Err("ffmpeg terminó pero el tono no apareció en la carpeta.".to_string());
+    }
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+fn media_subfolder(kind: &str) -> &'static str {
+    if kind == "video" {
+        "Videos"
+    } else {
+        "Musica"
+    }
+}
+
 fn build_download_args(
     app: &AppHandle,
     request: &DownloadRequest,
@@ -966,7 +1099,7 @@ fn build_download_args(
     if request.kind == "audio" && !matches!(request.format.as_str(), "mp3" | "m4a" | "opus") {
         return Err("El formato de audio no es válido.".to_string());
     }
-    let output_dir = PathBuf::from(&request.output_dir);
+    let output_dir = PathBuf::from(&request.output_dir).join(media_subfolder(&request.kind));
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("No se pudo preparar la carpeta de destino: {error}"))?;
 
@@ -1001,7 +1134,7 @@ fn build_download_args(
         "--print".to_string(),
         "after_move:JPKFILE:%(filepath)s".to_string(),
         "--paths".to_string(),
-        request.output_dir.clone(),
+        output_dir.to_string_lossy().to_string(),
         "--output".to_string(),
         "%(title).180B [%(id)s].%(ext)s".to_string(),
         if request.include_playlist {
@@ -1382,7 +1515,8 @@ pub fn run() {
             check_engine_update,
             update_engine,
             start_download,
-            cancel_download
+            cancel_download,
+            create_ringtone
         ])
         .run(tauri::generate_context!())
         .expect("error while running JpkkenVideker");
@@ -1536,6 +1670,78 @@ mod tests {
             results[2].thumbnail.as_deref(),
             Some("https://i.ytimg.com/vi/ghi789/hqdefault.jpg")
         );
+    }
+
+    #[test]
+    fn routes_downloads_to_media_subfolders() {
+        assert_eq!(media_subfolder("video"), "Videos");
+        assert_eq!(media_subfolder("audio"), "Musica");
+    }
+
+    #[test]
+    fn builds_iphone_ringtone_args() {
+        let request = RingtoneRequest {
+            input_path: "C:\\Musica\\Ice MC - Think About The Way.mp3".to_string(),
+            output_dir: "C:\\JpkkenVideker".to_string(),
+            start_seconds: 42.0,
+            duration_seconds: 30.0,
+            preset: "iphone".to_string(),
+            fade: true,
+        };
+        let tones_dir = Path::new("C:\\JpkkenVideker\\Tonos");
+        let (args, output_path) = ringtone_args(&request, tones_dir).unwrap();
+        assert!(args.contains(&"-f".to_string()) && args.contains(&"ipod".to_string()));
+        assert!(args.contains(&"aac".to_string()));
+        assert!(args
+            .iter()
+            .any(|arg| arg.starts_with("afade=t=in") && arg.contains("afade=t=out:st=28.50")));
+        assert_eq!(output_path.extension().and_then(|ext| ext.to_str()), Some("m4r"));
+        let position = args.iter().position(|arg| arg == "-ss").unwrap();
+        assert_eq!(args[position + 1], "42.00");
+    }
+
+    #[test]
+    fn builds_android_ringtone_args_and_clamps_duration() {
+        let request = RingtoneRequest {
+            input_path: "C:\\Musica\\cancion.m4a".to_string(),
+            output_dir: "C:\\JpkkenVideker".to_string(),
+            start_seconds: 0.0,
+            duration_seconds: 300.0,
+            preset: "android".to_string(),
+            fade: false,
+        };
+        let (args, output_path) = ringtone_args(&request, Path::new("C:\\Tonos")).unwrap();
+        assert!(args.contains(&"libmp3lame".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("afade")));
+        let position = args.iter().position(|arg| arg == "-t").unwrap();
+        assert_eq!(args[position + 1], "40.00");
+        assert_eq!(output_path.extension().and_then(|ext| ext.to_str()), Some("mp3"));
+    }
+
+    #[test]
+    fn rejects_invalid_ringtone_input() {
+        let mut request = RingtoneRequest {
+            input_path: "C:\\a.mp3".to_string(),
+            output_dir: "C:\\out".to_string(),
+            start_seconds: -3.0,
+            duration_seconds: 30.0,
+            preset: "iphone".to_string(),
+            fade: false,
+        };
+        assert!(ringtone_args(&request, Path::new("C:\\Tonos")).is_err());
+        request.start_seconds = 0.0;
+        request.preset = "windows-phone".to_string();
+        assert!(ringtone_args(&request, Path::new("C:\\Tonos")).is_err());
+    }
+
+    #[test]
+    fn sanitizes_ringtone_file_names() {
+        assert_eq!(
+            sanitize_file_stem("Ice MC: Think/About\\The*Way?"),
+            "Ice MC_ Think_About_The_Way_"
+        );
+        assert_eq!(sanitize_file_stem("***"), "___");
+        assert_eq!(sanitize_file_stem("   "), "tono");
     }
 
     #[test]

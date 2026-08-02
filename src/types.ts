@@ -40,6 +40,17 @@ export interface SearchResult {
   source: string;
 }
 
+export type RingtonePreset = "iphone" | "android";
+
+export interface RingtoneRequest {
+  inputPath: string;
+  outputDir: string;
+  startSeconds: number;
+  durationSeconds: number;
+  preset: RingtonePreset;
+  fade: boolean;
+}
+
 export interface MediaInfo {
   id: string;
   title: string;

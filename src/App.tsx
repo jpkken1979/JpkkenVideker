@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   ArrowDownToLine,
+  BellRing,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -45,6 +46,7 @@ import {
   cancelDownload,
   checkEngineUpdate,
   chooseDirectory,
+  createRingtone,
   getAppStatus,
   openExternal,
   revealDirectory,
@@ -56,6 +58,7 @@ import {
   formatDuration,
   formatViewCount,
   matchesDurationFilter,
+  parseTimeInput,
   previewEmbedUrl,
   qualityLabel,
   sourceLabel,
@@ -68,6 +71,7 @@ import type {
   DownloadRequest,
   EngineUpdateInfo,
   MediaInfo,
+  RingtonePreset,
   SearchResult,
   SearchSource,
   UserSettings,
@@ -179,6 +183,7 @@ function App() {
   const [searchHistory, setSearchHistory] = useState<string[]>(() =>
     readStored<string[]>(SEARCH_HISTORY_KEY, []),
   );
+  const [ringtoneItem, setRingtoneItem] = useState<DownloadItem | null>(null);
   const [notice, setNotice] = useState<{
     tone: "success" | "error" | "neutral";
     message: string;
@@ -637,6 +642,19 @@ function App() {
     }
   }
 
+  function openRingtoneModal(item: DownloadItem) {
+    if (appStatus && !appStatus.ffmpegReady) {
+      showNotice("error", "Falta el componente ffmpeg para crear tonos. Reinstala JpkkenVideker.");
+      return;
+    }
+    if (!settings.downloadDir) {
+      showNotice("error", "Elige primero una carpeta de destino en Ajustes.");
+      setView("settings");
+      return;
+    }
+    setRingtoneItem(item);
+  }
+
   function clearFinished() {
     setDownloads((current) =>
       current.filter(
@@ -783,6 +801,7 @@ function App() {
             onCancel={handleCancel}
             onRepair={(item) => void repairDownload(item)}
             onReveal={(path) => void revealDirectory(path)}
+            onCreateRingtone={openRingtoneModal}
             onClear={clearFinished}
             onGoHome={() => setView("home")}
           />
@@ -802,6 +821,16 @@ function App() {
           />
         )}
       </main>
+
+      {ringtoneItem && (
+        <RingtoneModal
+          item={ringtoneItem}
+          outputDir={settings.downloadDir}
+          onClose={() => setRingtoneItem(null)}
+          onNotice={showNotice}
+          onReveal={(path) => void revealDirectory(path)}
+        />
+      )}
 
       {notice && (
         <div
@@ -1008,6 +1037,221 @@ function HomeView({
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+interface RingtoneModalProps {
+  item: DownloadItem;
+  outputDir: string;
+  onClose: () => void;
+  onNotice: (tone: "success" | "error" | "neutral", message: string) => void;
+  onReveal: (path: string) => void;
+}
+
+const ringtoneDurations = [15, 20, 30, 40];
+
+function RingtoneModal({
+  item,
+  outputDir,
+  onClose,
+  onNotice,
+  onReveal,
+}: RingtoneModalProps) {
+  const [preset, setPreset] = useState<RingtonePreset>("iphone");
+  const [startText, setStartText] = useState("0:00");
+  const [duration, setDuration] = useState(30);
+  const [fade, setFade] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [createdPath, setCreatedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  async function handleCreate() {
+    if (!item.filePath) return;
+    const startSeconds = startText.trim() ? parseTimeInput(startText) : 0;
+    if (startSeconds == null) {
+      onNotice("error", "El inicio no es válido. Usa segundos (90) o minutos:segundos (1:30).");
+      return;
+    }
+    setCreating(true);
+    try {
+      const path = await createRingtone({
+        inputPath: item.filePath,
+        outputDir,
+        startSeconds,
+        durationSeconds: duration,
+        preset,
+        fade,
+      });
+      setCreatedPath(path);
+      onNotice("success", "Tono creado en la carpeta Tonos.");
+    } catch (error) {
+      onNotice("error", String(error));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div
+      className="preview-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Crear tono de ${item.title}`}
+      onClick={onClose}
+    >
+      <div
+        className="preview-modal ringtone-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="preview-header">
+          <div>
+            <p className="eyebrow">CREAR TONO</p>
+            <h3>{item.title}</h3>
+          </div>
+          <button
+            className="icon-button subtle"
+            onClick={onClose}
+            aria-label="Cerrar creador de tonos"
+          >
+            <X size={18} />
+          </button>
+        </header>
+
+        {createdPath ? (
+          <div className="ringtone-done">
+            <CheckCircle2 size={22} />
+            <p className="ringtone-path" title={createdPath}>
+              {createdPath}
+            </p>
+            <div className="ringtone-instructions">
+              {preset === "iphone" ? (
+                <p>
+                  <strong>Para instalarlo en tu iPhone:</strong> conecta el
+                  teléfono a la PC, abre iTunes (o la app Dispositivos de
+                  Apple), arrastra el archivo .m4r a la sección Tonos y
+                  sincroniza. Después elígelo en Ajustes → Sonidos.
+                </p>
+              ) : (
+                <p>
+                  <strong>Para instalarlo en tu Android:</strong> copia el
+                  archivo .mp3 al teléfono por USB, dentro de la carpeta
+                  Ringtones (o Alarms para alarmas), y elígelo en Ajustes →
+                  Sonido.
+                </p>
+              )}
+            </div>
+            <footer className="preview-footer">
+              <button
+                className="primary-button"
+                onClick={() => onReveal(createdPath)}
+              >
+                <FolderOpen size={16} />
+                Abrir carpeta Tonos
+              </button>
+              <button className="secondary-button" onClick={onClose}>
+                Cerrar
+              </button>
+            </footer>
+          </div>
+        ) : (
+          <>
+            <div
+              className="segmented-control"
+              role="group"
+              aria-label="Tipo de teléfono"
+            >
+              <button
+                className={preset === "iphone" ? "active" : ""}
+                aria-pressed={preset === "iphone"}
+                onClick={() => setPreset("iphone")}
+              >
+                iPhone (.m4r)
+              </button>
+              <button
+                className={preset === "android" ? "active" : ""}
+                aria-pressed={preset === "android"}
+                onClick={() => setPreset("android")}
+              >
+                Android (.mp3)
+              </button>
+            </div>
+
+            <div className="option-grid">
+              <label>
+                <span>Empieza en</span>
+                <div className="select-shell">
+                  <input
+                    className="ringtone-start"
+                    value={startText}
+                    onChange={(event) => setStartText(event.target.value)}
+                    placeholder="0:00"
+                    aria-label="Momento donde empieza el tono"
+                    spellCheck={false}
+                  />
+                </div>
+              </label>
+              <label>
+                <span>Duración</span>
+                <div className="select-shell">
+                  <select
+                    aria-label="Duración del tono"
+                    value={duration}
+                    onChange={(event) => setDuration(Number(event.target.value))}
+                  >
+                    {ringtoneDurations.map((value) => (
+                      <option key={value} value={value}>
+                        {value} segundos
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={16} />
+                </div>
+              </label>
+            </div>
+
+            <div className="toggle-list">
+              <Toggle
+                label="Suavizar inicio y final"
+                description="Sube y baja el volumen gradualmente"
+                checked={fade}
+                onChange={setFade}
+              />
+            </div>
+
+            <p className="ringtone-hint">
+              <Info size={14} />
+              Escribe dónde empieza la mejor parte (ej. 1:05). El iPhone acepta
+              tonos de hasta 40 segundos; para llamadas lo típico es 30.
+            </p>
+
+            <footer className="preview-footer">
+              <button
+                className="primary-button"
+                onClick={() => void handleCreate()}
+                disabled={creating}
+              >
+                {creating ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <BellRing size={16} />
+                )}
+                {creating ? "Creando tono…" : "Crear tono"}
+              </button>
+              <button className="secondary-button" onClick={onClose}>
+                Cancelar
+              </button>
+            </footer>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1675,6 +1919,7 @@ interface DownloadsViewProps {
   onCancel: (id: string) => void;
   onRepair: (item: DownloadItem) => void;
   onReveal: (path: string) => void;
+  onCreateRingtone: (item: DownloadItem) => void;
   onClear: () => void;
   onGoHome: () => void;
 }
@@ -1685,6 +1930,7 @@ function DownloadsView({
   onCancel,
   onRepair,
   onReveal,
+  onCreateRingtone,
   onClear,
   onGoHome,
 }: DownloadsViewProps) {
@@ -1804,6 +2050,7 @@ function DownloadsView({
                 onCancel={onCancel}
                 onRepair={onRepair}
                 onReveal={onReveal}
+                onCreateRingtone={onCreateRingtone}
               />
             ))}
             {!visible.length && (
@@ -1842,11 +2089,13 @@ function DownloadRow({
   onCancel,
   onRepair,
   onReveal,
+  onCreateRingtone,
 }: {
   item: DownloadItem;
   onCancel: (id: string) => void;
   onRepair: (item: DownloadItem) => void;
   onReveal: (path: string) => void;
+  onCreateRingtone: (item: DownloadItem) => void;
 }) {
   const active = ["queued", "downloading", "retrying", "processing"].includes(
     item.status,
@@ -1937,14 +2186,26 @@ function DownloadRow({
             <Square size={15} fill="currentColor" />
           </button>
         ) : item.status === "completed" ? (
-          <button
-            className="icon-button"
-            onClick={() => item.filePath && onReveal(item.filePath)}
-            aria-label="Abrir archivo"
-            title="Abrir archivo"
-          >
-            <FolderOpen size={17} />
-          </button>
+          <>
+            {item.filePath ? (
+              <button
+                className="icon-button ringtone-trigger"
+                onClick={() => onCreateRingtone(item)}
+                aria-label={`Crear tono de ${item.title}`}
+                title="Crear tono para iPhone o Android"
+              >
+                <BellRing size={17} />
+              </button>
+            ) : null}
+            <button
+              className="icon-button"
+              onClick={() => item.filePath && onReveal(item.filePath)}
+              aria-label="Abrir archivo"
+              title="Abrir archivo"
+            >
+              <FolderOpen size={17} />
+            </button>
+          </>
         ) : (
           <>
             {item.technicalDetails ? (

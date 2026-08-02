@@ -7,6 +7,7 @@ import type {
   DownloadRequest,
   EngineUpdateInfo,
   MediaInfo,
+  RingtoneRequest,
   SearchResult,
   SearchSource,
 } from "../types";
@@ -124,6 +125,17 @@ export async function searchMedia(
     }));
   }
   return invoke<SearchResult[]>("search_media", { query, limit, source });
+}
+
+export async function createRingtone(request: RingtoneRequest): Promise<string> {
+  if (!runningInTauri) {
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    const extension = request.preset === "iphone" ? "m4r" : "mp3";
+    return `${request.outputDir}\\Tonos\\Vista previa (tono ${Math.round(
+      request.durationSeconds,
+    )}s).${extension}`;
+  }
+  return invoke<string>("create_ringtone", { request });
 }
 
 export async function openExternal(url: string): Promise<void> {

@@ -2270,6 +2270,72 @@ select:focus-visible {
   gap: 10px;
 }
 
+.ringtone-modal {
+  width: min(560px, 100%);
+}
+
+.ringtone-trigger {
+  color: var(--lime);
+}
+
+.select-shell .ringtone-start {
+  width: 100%;
+  height: 100%;
+  padding: 0 11px;
+  color: var(--text);
+  background: var(--field);
+  border: 0;
+  border-radius: 8px;
+  outline: 0;
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.ringtone-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ringtone-hint svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ringtone-done {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text);
+}
+
+.ringtone-done > svg {
+  color: var(--lime);
+}
+
+.ringtone-path {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  color: var(--muted-strong);
+  background: var(--field);
+  border-radius: 8px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ringtone-instructions p {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 @media (max-width: 640px) {
   .result-row {
     grid-template-columns: 92px minmax(0, 1fr);

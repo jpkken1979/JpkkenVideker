@@ -4,6 +4,7 @@ import {
   formatDuration,
   formatViewCount,
   matchesDurationFilter,
+  parseTimeInput,
   previewEmbedUrl,
   qualityLabel,
   sourceLabel,
@@ -27,6 +28,16 @@ describe("format helpers", () => {
     expect(formatViewCount(1_234_567)).toContain("M visualizaciones");
     expect(formatViewCount(null)).toBe("");
     expect(formatViewCount(-5)).toBe("");
+  });
+
+  it("parses ringtone start times", () => {
+    expect(parseTimeInput("90")).toBe(90);
+    expect(parseTimeInput("1:30")).toBe(90);
+    expect(parseTimeInput("1:02:05")).toBe(3725);
+    expect(parseTimeInput("0:00")).toBe(0);
+    expect(parseTimeInput("1:75")).toBeNull();
+    expect(parseTimeInput("abc")).toBeNull();
+    expect(parseTimeInput("")).toBeNull();
   });
 
   it("filters results by duration ranges", () => {
