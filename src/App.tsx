@@ -55,9 +55,11 @@ import {
 import {
   formatDuration,
   formatViewCount,
+  matchesDurationFilter,
   previewEmbedUrl,
   qualityLabel,
   sourceLabel,
+  type DurationFilter,
 } from "./lib/format";
 import type {
   AppStatus,
@@ -75,6 +77,8 @@ import type {
 const SETTINGS_KEY = "jpkkenvideker.settings.v1";
 const DOWNLOADS_KEY = "jpkkenvideker.downloads.v1";
 const ENGINE_CHECK_KEY = "jpkkenvideker.engine-check.v1";
+const SEARCH_HISTORY_KEY = "jpkkenvideker.search-history.v1";
+const SEARCH_HISTORY_LIMIT = 8;
 const WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const defaultSettings: UserSettings = {
@@ -172,6 +176,9 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [searchSource, setSearchSource] = useState<SearchSource>("youtube");
   const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchHistory, setSearchHistory] = useState<string[]>(() =>
+    readStored<string[]>(SEARCH_HISTORY_KEY, []),
+  );
   const [notice, setNotice] = useState<{
     tone: "success" | "error" | "neutral";
     message: string;
@@ -203,6 +210,13 @@ function App() {
       JSON.stringify(downloads.slice(0, 80)),
     );
   }, [downloads]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SEARCH_HISTORY_KEY,
+      JSON.stringify(searchHistory.slice(0, SEARCH_HISTORY_LIMIT)),
+    );
+  }, [searchHistory]);
 
   useEffect(() => {
     void getAppStatus()
@@ -279,11 +293,24 @@ function App() {
       const results = await searchMedia(cleanQuery, 20, source ?? searchSource);
       setSearchResults(results);
       setSearchPerformed(true);
+      setSearchHistory((current) =>
+        [
+          cleanQuery,
+          ...current.filter(
+            (item) => item.toLowerCase() !== cleanQuery.toLowerCase(),
+          ),
+        ].slice(0, SEARCH_HISTORY_LIMIT),
+      );
     } catch (error) {
       showNotice("error", String(error));
     } finally {
       setSearching(false);
     }
+  }
+
+  function handlePickHistory(pickedQuery: string) {
+    setSearchQuery(pickedQuery);
+    void handleSearch(pickedQuery);
   }
 
   function handleSelectResult(resultUrl: string) {
@@ -399,8 +426,15 @@ function App() {
     );
   }
 
-  async function handleDownload() {
-    if (!media) return;
+  async function enqueueDownload(
+    info: {
+      url: string;
+      title: string;
+      uploader: string | null;
+      thumbnail: string | null;
+    },
+    noticeMessage = "Descarga añadida a la cola.",
+  ) {
     if (!settings.downloadDir) {
       showNotice("error", "Elige primero una carpeta de destino.");
       return;
@@ -416,8 +450,8 @@ function App() {
         : settings.audioQuality;
     const request: DownloadRequest = {
       jobId: id,
-      url: media.webpageUrl || url,
-      title: media.title,
+      url: info.url,
+      title: info.title,
       outputDir: settings.downloadDir,
       kind: settings.kind,
       format,
@@ -435,10 +469,10 @@ function App() {
     };
     const item: DownloadItem = {
       id,
-      url: media.webpageUrl || url,
-      title: media.title,
-      uploader: media.uploader,
-      thumbnail: media.thumbnail,
+      url: info.url,
+      title: info.title,
+      uploader: info.uploader || "Autor desconocido",
+      thumbnail: info.thumbnail,
       kind: settings.kind,
       format,
       quality,
@@ -458,7 +492,7 @@ function App() {
 
     setDownloads((current) => [item, ...current]);
     setView("downloads");
-    showNotice("neutral", "Descarga añadida a la cola.");
+    showNotice("neutral", noticeMessage);
     try {
       await beginDownload(request, applyDownloadEvent);
     } catch (error) {
@@ -477,6 +511,40 @@ function App() {
       });
       showNotice("error", "La descarga terminó con un error.");
     }
+  }
+
+  async function handleDownload() {
+    if (!media) return;
+    await enqueueDownload({
+      url: media.webpageUrl || url,
+      title: media.title,
+      uploader: media.uploader,
+      thumbnail: media.thumbnail,
+    });
+  }
+
+  async function handleQuickDownload(result: SearchResult) {
+    if (!settings.downloadDir) {
+      showNotice("error", "Elige primero una carpeta de destino en Ajustes.");
+      setView("settings");
+      return;
+    }
+    const format =
+      settings.kind === "video" ? settings.videoFormat : settings.audioFormat;
+    const quality =
+      settings.kind === "video" ? settings.videoQuality : settings.audioQuality;
+    await enqueueDownload(
+      {
+        url: result.url,
+        title: result.title,
+        uploader: result.uploader,
+        thumbnail: result.thumbnail,
+      },
+      `Descarga rápida añadida (${format.toUpperCase()} · ${qualityLabel(
+        quality,
+        settings.kind,
+      )}).`,
+    );
   }
 
   async function handleCancel(id: string) {
@@ -699,8 +767,12 @@ function App() {
               }
             }}
             searchPerformed={searchPerformed}
+            history={searchHistory}
+            onPickHistory={handlePickHistory}
+            onClearHistory={() => setSearchHistory([])}
             onSearch={() => void handleSearch()}
             onSelectResult={handleSelectResult}
+            onQuickDownload={(result) => void handleQuickDownload(result)}
             onOpenExternal={(resultUrl) => void openExternal(resultUrl)}
           />
         )}
@@ -948,10 +1020,21 @@ interface SearchViewProps {
   source: SearchSource;
   setSource: (source: SearchSource) => void;
   searchPerformed: boolean;
+  history: string[];
+  onPickHistory: (query: string) => void;
+  onClearHistory: () => void;
   onSearch: () => void;
   onSelectResult: (url: string) => void;
+  onQuickDownload: (result: SearchResult) => void;
   onOpenExternal: (url: string) => void;
 }
+
+const durationFilters: { id: DurationFilter; label: string }[] = [
+  { id: "all", label: "Todos" },
+  { id: "short", label: "Cortos" },
+  { id: "medium", label: "Medios" },
+  { id: "long", label: "Largos (+30 min)" },
+];
 
 const searchSources: { id: SearchSource; label: string }[] = [
   { id: "youtube", label: "YouTube" },
@@ -967,11 +1050,25 @@ function SearchView({
   source,
   setSource,
   searchPerformed,
+  history,
+  onPickHistory,
+  onClearHistory,
   onSearch,
   onSelectResult,
+  onQuickDownload,
   onOpenExternal,
 }: SearchViewProps) {
   const [preview, setPreview] = useState<SearchResult | null>(null);
+  const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
+
+  const visibleResults = useMemo(
+    () =>
+      results.filter((result) =>
+        matchesDurationFilter(result.duration, durationFilter),
+      ),
+    [results, durationFilter],
+  );
+  const hiddenCount = results.length - visibleResults.length;
 
   useEffect(() => {
     if (!preview) return;
@@ -1056,8 +1153,29 @@ function SearchView({
       {searching && <SearchSkeleton />}
 
       {!searching && results.length > 0 && (
-        <div className="download-list search-results">
-          {results.map((result) => (
+        <>
+          <div className="search-toolbar">
+            <div className="filter-tabs">
+              {durationFilters.map((item) => (
+                <button
+                  key={item.id}
+                  className={durationFilter === item.id ? "active" : ""}
+                  onClick={() => setDurationFilter(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {hiddenCount > 0 && (
+              <p className="filter-hint">
+                {hiddenCount === 1
+                  ? "1 resultado oculto por el filtro"
+                  : `${hiddenCount} resultados ocultos por el filtro`}
+              </p>
+            )}
+          </div>
+          <div className="download-list search-results">
+          {visibleResults.map((result) => (
             <article className="download-row result-row" key={result.id}>
               <div className="download-thumb">
                 {result.thumbnail ? (
@@ -1105,6 +1223,14 @@ function SearchView({
                   Descargar
                 </button>
                 <button
+                  className="icon-button quick-download"
+                  onClick={() => onQuickDownload(result)}
+                  aria-label={`Descarga rápida de ${result.title}`}
+                  title="Descarga rápida con tus ajustes"
+                >
+                  <Zap size={17} />
+                </button>
+                <button
                   className="icon-button"
                   onClick={() => onOpenExternal(result.url)}
                   aria-label={`Abrir ${result.title} en el navegador`}
@@ -1115,7 +1241,20 @@ function SearchView({
               </div>
             </article>
           ))}
-        </div>
+          {!visibleResults.length && (
+            <div className="no-results">
+              <Search size={24} />
+              <p>El filtro de duración ocultó todos los resultados.</p>
+              <button
+                className="text-button"
+                onClick={() => setDurationFilter("all")}
+              >
+                Mostrar todos
+              </button>
+            </div>
+          )}
+          </div>
+        </>
       )}
 
       {!searching && searchPerformed && !results.length && (
@@ -1139,6 +1278,26 @@ function SearchView({
             Busca en YouTube, SoundCloud o Dailymotion y descarga el resultado
             con un clic.
           </p>
+          {history.length > 0 && (
+            <div className="search-history">
+              <p className="eyebrow">BÚSQUEDAS RECIENTES</p>
+              <div className="history-chips">
+                {history.map((item) => (
+                  <button
+                    key={item}
+                    className="history-chip"
+                    onClick={() => onPickHistory(item)}
+                  >
+                    <History size={13} />
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <button className="text-button" onClick={onClearHistory}>
+                Borrar historial
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1196,6 +1355,17 @@ function SearchView({
               >
                 <Download size={16} />
                 Sí, descargar este
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  const selected = preview;
+                  setPreview(null);
+                  onQuickDownload(selected);
+                }}
+              >
+                <Zap size={16} />
+                Descarga rápida
               </button>
               <button
                 className="secondary-button"

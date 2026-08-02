@@ -3,6 +3,7 @@ import {
   formatBytes,
   formatDuration,
   formatViewCount,
+  matchesDurationFilter,
   previewEmbedUrl,
   qualityLabel,
   sourceLabel,
@@ -26,6 +27,18 @@ describe("format helpers", () => {
     expect(formatViewCount(1_234_567)).toContain("M visualizaciones");
     expect(formatViewCount(null)).toBe("");
     expect(formatViewCount(-5)).toBe("");
+  });
+
+  it("filters results by duration ranges", () => {
+    expect(matchesDurationFilter(null, "all")).toBe(true);
+    expect(matchesDurationFilter(null, "long")).toBe(false);
+    expect(matchesDurationFilter(239, "short")).toBe(true);
+    expect(matchesDurationFilter(240, "short")).toBe(false);
+    expect(matchesDurationFilter(240, "medium")).toBe(true);
+    expect(matchesDurationFilter(1800, "medium")).toBe(true);
+    expect(matchesDurationFilter(1801, "medium")).toBe(false);
+    expect(matchesDurationFilter(1801, "long")).toBe(true);
+    expect(matchesDurationFilter(5400, "long")).toBe(true);
   });
 
   it("builds preview embed urls per source", () => {

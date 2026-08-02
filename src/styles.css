@@ -2143,6 +2143,64 @@ select:focus-visible {
   color: var(--lime);
 }
 
+.quick-download {
+  color: var(--lime);
+}
+
+.search-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filter-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.search-history {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.history-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--muted-strong);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  font-size: 11px;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease;
+}
+
+.history-chip:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
 .preview-overlay {
   position: fixed;
   inset: 0;

@@ -33,6 +33,19 @@ export function formatViewCount(count: number | null): string {
   return `${compact} visualizaciones`;
 }
 
+export type DurationFilter = "all" | "short" | "medium" | "long";
+
+export function matchesDurationFilter(
+  duration: number | null,
+  filter: DurationFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (duration == null || !Number.isFinite(duration)) return false;
+  if (filter === "short") return duration < 240;
+  if (filter === "medium") return duration >= 240 && duration <= 1800;
+  return duration > 1800;
+}
+
 export function previewEmbedUrl(
   source: string,
   id: string,

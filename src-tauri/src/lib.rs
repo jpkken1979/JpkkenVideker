@@ -644,6 +644,8 @@ fn search_results_from_json(value: &Value, source: &str) -> Vec<SearchResult> {
                     (entry.get("ie_key").and_then(Value::as_str) == Some("Youtube"))
                         .then(|| format!("https://www.youtube.com/watch?v={id}"))
                 })?;
+            let is_youtube = source == "youtube"
+                || entry.get("ie_key").and_then(Value::as_str) == Some("Youtube");
             let thumbnail = entry
                 .get("thumbnails")
                 .and_then(Value::as_array)
@@ -651,7 +653,10 @@ fn search_results_from_json(value: &Value, source: &str) -> Vec<SearchResult> {
                 .and_then(|thumb| thumb.get("url"))
                 .and_then(Value::as_str)
                 .or_else(|| entry.get("thumbnail").and_then(Value::as_str))
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| {
+                    is_youtube.then(|| format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
+                });
             Some(SearchResult {
                 id,
                 url,
@@ -1501,11 +1506,16 @@ mod tests {
                     "channel": "Canal música",
                     "thumbnail": "https://i.ytimg.com/vi/def456/default.jpg"
                 },
+                {
+                    "id": "ghi789",
+                    "url": "https://www.youtube.com/watch?v=ghi789",
+                    "title": "Sin miniatura en la respuesta"
+                },
                 { "title": "Entrada sin id" }
             ]
         });
         let results = search_results_from_json(&value, "youtube");
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].id, "abc123");
         assert_eq!(
             results[0].thumbnail.as_deref(),
@@ -1522,6 +1532,10 @@ mod tests {
             Some("https://i.ytimg.com/vi/def456/default.jpg")
         );
         assert_eq!(results[1].source, "youtube");
+        assert_eq!(
+            results[2].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/ghi789/hqdefault.jpg")
+        );
     }
 
     #[test]
