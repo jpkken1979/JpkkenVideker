@@ -1,6 +1,25 @@
 <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="48" height="48" rx="14" fill="#B6F36B"/>
+  <defs>
+    <linearGradient id="jpkbg" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DDFC9E"/>
+      <stop offset="0.52" stop-color="#B6F36B"/>
+      <stop offset="1" stop-color="#7FCB3D"/>
+    </linearGradient>
+    <radialGradient id="jpkshine" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(15.5 3.7) rotate(90) scale(40 49)">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="0.38" stop-color="#FFFFFF" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="48" height="48" rx="14" fill="url(#jpkbg)"/>
+  <rect width="48" height="48" rx="14" fill="url(#jpkshine)"/>
+
   <path d="M31 13.5V29C31 35.2 27.2 38.5 21.5 38.5C17.2 38.5 13.8 36.3 12.5 33" stroke="#10130E" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M21 13.5H31" stroke="#10130E" stroke-width="4.2" stroke-linecap="round"/>
-  <path d="M18.5 19L25.5 23L18.5 27V19Z" fill="#10130E"/>
+  <path d="M18.7 19.2L25.3 23L18.7 26.8V19.2Z" fill="#10130E" stroke="#10130E" stroke-width="1.9" stroke-linejoin="round"/>
+
+  <circle cx="36.8" cy="33.4" r="1.6" fill="#10130E" opacity="0.85"/>
+  <circle cx="36.8" cy="37.9" r="1.25" fill="#10130E" opacity="0.55"/>
+  <circle cx="36.8" cy="41.6" r="0.9" fill="#10130E" opacity="0.3"/>
 </svg>
