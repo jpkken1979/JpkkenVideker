@@ -33,6 +33,18 @@ export function formatViewCount(count: number | null): string {
   return `${compact} visualizaciones`;
 }
 
+export function parseTimeInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  const parts = trimmed.split(":");
+  if (parts.length < 2 || parts.length > 3) return null;
+  if (parts.some((part) => !/^\d+$/.test(part))) return null;
+  const numbers = parts.map(Number);
+  if (numbers.slice(1).some((section) => section > 59)) return null;
+  return numbers.reduce((total, section) => total * 60 + section, 0);
+}
+
 export type DurationFilter = "all" | "short" | "medium" | "long";
 
 export function matchesDurationFilter(
