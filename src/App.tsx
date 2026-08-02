@@ -24,6 +24,7 @@ import {
   Moon,
   MoreHorizontal,
   Music2,
+  Play,
   RefreshCw,
   Search,
   Settings,
@@ -45,11 +46,21 @@ import {
   checkEngineUpdate,
   chooseDirectory,
   getAppStatus,
+  openExternal,
   revealDirectory,
   runningInTauri,
+  searchMedia,
   updateEngine,
 } from "./lib/bridge";
-import { formatDuration, qualityLabel, sourceLabel } from "./lib/format";
+import {
+  formatDuration,
+  formatViewCount,
+  matchesDurationFilter,
+  previewEmbedUrl,
+  qualityLabel,
+  sourceLabel,
+  type DurationFilter,
+} from "./lib/format";
 import type {
   AppStatus,
   DownloadEvent,
@@ -57,6 +68,8 @@ import type {
   DownloadRequest,
   EngineUpdateInfo,
   MediaInfo,
+  SearchResult,
+  SearchSource,
   UserSettings,
   View,
 } from "./types";
@@ -64,6 +77,8 @@ import type {
 const SETTINGS_KEY = "jpkkenvideker.settings.v1";
 const DOWNLOADS_KEY = "jpkkenvideker.downloads.v1";
 const ENGINE_CHECK_KEY = "jpkkenvideker.engine-check.v1";
+const SEARCH_HISTORY_KEY = "jpkkenvideker.search-history.v1";
+const SEARCH_HISTORY_LIMIT = 8;
 const WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const defaultSettings: UserSettings = {
@@ -156,6 +171,14 @@ function App() {
   const [url, setUrl] = useState("");
   const [media, setMedia] = useState<MediaInfo | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchSource, setSearchSource] = useState<SearchSource>("youtube");
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchHistory, setSearchHistory] = useState<string[]>(() =>
+    readStored<string[]>(SEARCH_HISTORY_KEY, []),
+  );
   const [notice, setNotice] = useState<{
     tone: "success" | "error" | "neutral";
     message: string;
@@ -187,6 +210,13 @@ function App() {
       JSON.stringify(downloads.slice(0, 80)),
     );
   }, [downloads]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SEARCH_HISTORY_KEY,
+      JSON.stringify(searchHistory.slice(0, SEARCH_HISTORY_LIMIT)),
+    );
+  }, [searchHistory]);
 
   useEffect(() => {
     void getAppStatus()
@@ -248,9 +278,59 @@ function App() {
     }
   }
 
-  async function handleAnalyze() {
-    const cleanUrl = url.trim();
+  async function handleSearch(rawQuery?: string, source?: SearchSource) {
+    const cleanQuery = (rawQuery ?? searchQuery).trim();
+    if (!cleanQuery) {
+      showNotice("error", "Escribe algo para buscar.");
+      return;
+    }
+    if (appStatus && !appStatus.ytDlpReady) {
+      showNotice("error", "Falta el motor yt-dlp. Reinstala JpkkenVideker o ejecuta npm run sidecars.");
+      return;
+    }
+    setSearching(true);
+    try {
+      const results = await searchMedia(cleanQuery, 20, source ?? searchSource);
+      setSearchResults(results);
+      setSearchPerformed(true);
+      setSearchHistory((current) =>
+        [
+          cleanQuery,
+          ...current.filter(
+            (item) => item.toLowerCase() !== cleanQuery.toLowerCase(),
+          ),
+        ].slice(0, SEARCH_HISTORY_LIMIT),
+      );
+    } catch (error) {
+      showNotice("error", String(error));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function handlePickHistory(pickedQuery: string) {
+    setSearchQuery(pickedQuery);
+    void handleSearch(pickedQuery);
+  }
+
+  function handleSelectResult(resultUrl: string) {
+    setUrl(resultUrl);
+    setView("home");
+    void handleAnalyze(resultUrl);
+  }
+
+  async function handleAnalyze(overrideUrl?: string) {
+    const cleanUrl = (overrideUrl ?? url).trim();
     if (!isValidUrl(cleanUrl)) {
+      if (cleanUrl && overrideUrl === undefined) {
+        setSearchQuery(cleanUrl);
+        setSearchResults([]);
+        setSearchPerformed(false);
+        setView("search");
+        showNotice("neutral", "Eso no parece un enlace; buscándolo por ti.");
+        void handleSearch(cleanUrl);
+        return;
+      }
       showNotice("error", "Pega un enlace válido que empiece por http o https.");
       return;
     }
@@ -346,8 +426,15 @@ function App() {
     );
   }
 
-  async function handleDownload() {
-    if (!media) return;
+  async function enqueueDownload(
+    info: {
+      url: string;
+      title: string;
+      uploader: string | null;
+      thumbnail: string | null;
+    },
+    noticeMessage = "Descarga añadida a la cola.",
+  ) {
     if (!settings.downloadDir) {
       showNotice("error", "Elige primero una carpeta de destino.");
       return;
@@ -363,8 +450,8 @@ function App() {
         : settings.audioQuality;
     const request: DownloadRequest = {
       jobId: id,
-      url: media.webpageUrl || url,
-      title: media.title,
+      url: info.url,
+      title: info.title,
       outputDir: settings.downloadDir,
       kind: settings.kind,
       format,
@@ -382,10 +469,10 @@ function App() {
     };
     const item: DownloadItem = {
       id,
-      url: media.webpageUrl || url,
-      title: media.title,
-      uploader: media.uploader,
-      thumbnail: media.thumbnail,
+      url: info.url,
+      title: info.title,
+      uploader: info.uploader || "Autor desconocido",
+      thumbnail: info.thumbnail,
       kind: settings.kind,
       format,
       quality,
@@ -405,7 +492,7 @@ function App() {
 
     setDownloads((current) => [item, ...current]);
     setView("downloads");
-    showNotice("neutral", "Descarga añadida a la cola.");
+    showNotice("neutral", noticeMessage);
     try {
       await beginDownload(request, applyDownloadEvent);
     } catch (error) {
@@ -424,6 +511,40 @@ function App() {
       });
       showNotice("error", "La descarga terminó con un error.");
     }
+  }
+
+  async function handleDownload() {
+    if (!media) return;
+    await enqueueDownload({
+      url: media.webpageUrl || url,
+      title: media.title,
+      uploader: media.uploader,
+      thumbnail: media.thumbnail,
+    });
+  }
+
+  async function handleQuickDownload(result: SearchResult) {
+    if (!settings.downloadDir) {
+      showNotice("error", "Elige primero una carpeta de destino en Ajustes.");
+      setView("settings");
+      return;
+    }
+    const format =
+      settings.kind === "video" ? settings.videoFormat : settings.audioFormat;
+    const quality =
+      settings.kind === "video" ? settings.videoQuality : settings.audioQuality;
+    await enqueueDownload(
+      {
+        url: result.url,
+        title: result.title,
+        uploader: result.uploader,
+        thumbnail: result.thumbnail,
+      },
+      `Descarga rápida añadida (${format.toUpperCase()} · ${qualityLabel(
+        quality,
+        settings.kind,
+      )}).`,
+    );
   }
 
   async function handleCancel(id: string) {
@@ -530,6 +651,7 @@ function App() {
 
   const navItems = [
     { id: "home" as const, label: "Inicio", icon: Home },
+    { id: "search" as const, label: "Buscar", icon: Search },
     {
       id: "downloads" as const,
       label: "Descargas",
@@ -625,10 +747,33 @@ function App() {
             setSettings={updateSettings}
             appStatus={appStatus}
             onPaste={handlePaste}
-            onAnalyze={handleAnalyze}
+            onAnalyze={() => void handleAnalyze()}
             onChooseDirectory={handleChooseDirectory}
             onDownload={handleDownload}
             completedDownloads={completedDownloads}
+          />
+        )}
+        {view === "search" && (
+          <SearchView
+            query={searchQuery}
+            setQuery={setSearchQuery}
+            results={searchResults}
+            searching={searching}
+            source={searchSource}
+            setSource={(source) => {
+              setSearchSource(source);
+              if (searchQuery.trim() && searchPerformed) {
+                void handleSearch(undefined, source);
+              }
+            }}
+            searchPerformed={searchPerformed}
+            history={searchHistory}
+            onPickHistory={handlePickHistory}
+            onClearHistory={() => setSearchHistory([])}
+            onSearch={() => void handleSearch()}
+            onSelectResult={handleSelectResult}
+            onQuickDownload={(result) => void handleQuickDownload(result)}
+            onOpenExternal={(resultUrl) => void openExternal(resultUrl)}
           />
         )}
         {view === "downloads" && (
@@ -863,6 +1008,392 @@ function HomeView({
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+interface SearchViewProps {
+  query: string;
+  setQuery: (value: string) => void;
+  results: SearchResult[];
+  searching: boolean;
+  source: SearchSource;
+  setSource: (source: SearchSource) => void;
+  searchPerformed: boolean;
+  history: string[];
+  onPickHistory: (query: string) => void;
+  onClearHistory: () => void;
+  onSearch: () => void;
+  onSelectResult: (url: string) => void;
+  onQuickDownload: (result: SearchResult) => void;
+  onOpenExternal: (url: string) => void;
+}
+
+const durationFilters: { id: DurationFilter; label: string }[] = [
+  { id: "all", label: "Todos" },
+  { id: "short", label: "Cortos" },
+  { id: "medium", label: "Medios" },
+  { id: "long", label: "Largos (+30 min)" },
+];
+
+const searchSources: { id: SearchSource; label: string }[] = [
+  { id: "youtube", label: "YouTube" },
+  { id: "soundcloud", label: "SoundCloud" },
+  { id: "dailymotion", label: "Dailymotion" },
+];
+
+function SearchView({
+  query,
+  setQuery,
+  results,
+  searching,
+  source,
+  setSource,
+  searchPerformed,
+  history,
+  onPickHistory,
+  onClearHistory,
+  onSearch,
+  onSelectResult,
+  onQuickDownload,
+  onOpenExternal,
+}: SearchViewProps) {
+  const [preview, setPreview] = useState<SearchResult | null>(null);
+  const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
+
+  const visibleResults = useMemo(
+    () =>
+      results.filter((result) =>
+        matchesDurationFilter(result.duration, durationFilter),
+      ),
+    [results, durationFilter],
+  );
+  const hiddenCount = results.length - visibleResults.length;
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreview(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [preview]);
+
+  const previewSrc = preview
+    ? previewEmbedUrl(preview.source, preview.id, preview.url)
+    : null;
+
+  return (
+    <div className="page search-page">
+      <header className="section-header">
+        <div>
+          <p className="eyebrow">ENCUENTRA SIN SALIR</p>
+          <h1>Buscar</h1>
+          <p>
+            Escribe un artista, canción o vídeo y descárgalo sin abrir el
+            navegador.
+          </p>
+        </div>
+      </header>
+
+      <section className="capture-card">
+        <div className={`url-field ${searching ? "loading" : ""}`}>
+          <Search size={20} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSearch();
+            }}
+            placeholder="Ej. Ice MC — Think About The Way"
+            aria-label="Qué quieres buscar"
+            spellCheck={false}
+          />
+          {query ? (
+            <button
+              className="icon-button subtle"
+              onClick={() => setQuery("")}
+              aria-label="Borrar búsqueda"
+            >
+              <X size={17} />
+            </button>
+          ) : null}
+          <button
+            className="primary-button analyze-button"
+            onClick={onSearch}
+            disabled={searching}
+          >
+            {searching ? (
+              <LoaderCircle className="spin" size={18} />
+            ) : (
+              <Search size={18} />
+            )}
+            {searching ? "Buscando…" : "Buscar"}
+          </button>
+        </div>
+
+        <div
+          className="segmented-control search-sources"
+          role="group"
+          aria-label="Fuente de búsqueda"
+        >
+          {searchSources.map((item) => (
+            <button
+              key={item.id}
+              className={source === item.id ? "active" : ""}
+              aria-pressed={source === item.id}
+              onClick={() => setSource(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {searching && <SearchSkeleton />}
+
+      {!searching && results.length > 0 && (
+        <>
+          <div className="search-toolbar">
+            <div className="filter-tabs">
+              {durationFilters.map((item) => (
+                <button
+                  key={item.id}
+                  className={durationFilter === item.id ? "active" : ""}
+                  onClick={() => setDurationFilter(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {hiddenCount > 0 && (
+              <p className="filter-hint">
+                {hiddenCount === 1
+                  ? "1 resultado oculto por el filtro"
+                  : `${hiddenCount} resultados ocultos por el filtro`}
+              </p>
+            )}
+          </div>
+          <div className="download-list search-results">
+          {visibleResults.map((result) => (
+            <article className="download-row result-row" key={result.id}>
+              <div className="download-thumb">
+                {result.thumbnail ? (
+                  <img
+                    src={result.thumbnail}
+                    alt={`Miniatura de ${result.title}`}
+                    loading="lazy"
+                  />
+                ) : (
+                  <Film size={26} />
+                )}
+              </div>
+              <div className="download-main">
+                <div className="download-title-line">
+                  <div>
+                    <h3>{result.title}</h3>
+                    <p>{result.uploader || "Autor desconocido"}</p>
+                  </div>
+                </div>
+                <div className="result-meta">
+                  <span>
+                    <Clock3 size={14} />
+                    {formatDuration(result.duration)}
+                  </span>
+                  {formatViewCount(result.viewCount) ? (
+                    <span>{formatViewCount(result.viewCount)}</span>
+                  ) : null}
+                  <span>{sourceLabel(result.source)}</span>
+                </div>
+              </div>
+              <div className="row-actions">
+                <button
+                  className="icon-button preview-trigger"
+                  onClick={() => setPreview(result)}
+                  aria-label={`Vista previa de ${result.title}`}
+                  title="Vista previa"
+                >
+                  <Play size={17} />
+                </button>
+                <button
+                  className="primary-button result-download"
+                  onClick={() => onSelectResult(result.url)}
+                >
+                  <Download size={16} />
+                  Descargar
+                </button>
+                <button
+                  className="icon-button quick-download"
+                  onClick={() => onQuickDownload(result)}
+                  aria-label={`Descarga rápida de ${result.title}`}
+                  title="Descarga rápida con tus ajustes"
+                >
+                  <Zap size={17} />
+                </button>
+                <button
+                  className="icon-button"
+                  onClick={() => onOpenExternal(result.url)}
+                  aria-label={`Abrir ${result.title} en el navegador`}
+                  title="Abrir en el navegador"
+                >
+                  <ExternalLink size={17} />
+                </button>
+              </div>
+            </article>
+          ))}
+          {!visibleResults.length && (
+            <div className="no-results">
+              <Search size={24} />
+              <p>El filtro de duración ocultó todos los resultados.</p>
+              <button
+                className="text-button"
+                onClick={() => setDurationFilter("all")}
+              >
+                Mostrar todos
+              </button>
+            </div>
+          )}
+          </div>
+        </>
+      )}
+
+      {!searching && searchPerformed && !results.length && (
+        <div className="no-results">
+          <Search size={24} />
+          <p>No encontramos nada con ese texto. Prueba con otras palabras.</p>
+        </div>
+      )}
+
+      {!searching && !searchPerformed && !results.length && (
+        <div className="empty-state">
+          <div className="empty-illustration">
+            <div className="empty-orbit orbit-one" />
+            <div className="empty-orbit orbit-two" />
+            <span>
+              <Search size={36} />
+            </span>
+          </div>
+          <h2>Encuentra música y vídeos</h2>
+          <p>
+            Busca en YouTube, SoundCloud o Dailymotion y descarga el resultado
+            con un clic.
+          </p>
+          {history.length > 0 && (
+            <div className="search-history">
+              <p className="eyebrow">BÚSQUEDAS RECIENTES</p>
+              <div className="history-chips">
+                {history.map((item) => (
+                  <button
+                    key={item}
+                    className="history-chip"
+                    onClick={() => onPickHistory(item)}
+                  >
+                    <History size={13} />
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <button className="text-button" onClick={onClearHistory}>
+                Borrar historial
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {preview && (
+        <div
+          className="preview-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Vista previa de ${preview.title}`}
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="preview-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="preview-header">
+              <div>
+                <p className="eyebrow">VISTA PREVIA</p>
+                <h3>{preview.title}</h3>
+              </div>
+              <button
+                className="icon-button subtle"
+                onClick={() => setPreview(null)}
+                aria-label="Cerrar vista previa"
+              >
+                <X size={18} />
+              </button>
+            </header>
+            {previewSrc ? (
+              <div className="preview-frame">
+                <iframe
+                  src={previewSrc}
+                  title={`Reproductor de ${preview.title}`}
+                  allow="autoplay; encrypted-media; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            ) : (
+              <div className="preview-unavailable">
+                <Info size={20} />
+                <p>
+                  Esta fuente no permite vista previa integrada. Ábrela en el
+                  navegador para comprobar el contenido.
+                </p>
+              </div>
+            )}
+            <footer className="preview-footer">
+              <button
+                className="primary-button"
+                onClick={() => {
+                  const selected = preview.url;
+                  setPreview(null);
+                  onSelectResult(selected);
+                }}
+              >
+                <Download size={16} />
+                Sí, descargar este
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  const selected = preview;
+                  setPreview(null);
+                  onQuickDownload(selected);
+                }}
+              >
+                <Zap size={16} />
+                Descarga rápida
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => onOpenExternal(preview.url)}
+              >
+                <ExternalLink size={16} />
+                Abrir en el navegador
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchSkeleton() {
+  return (
+    <div className="download-list search-results" aria-label="Buscando">
+      {[1, 2, 3].map((row) => (
+        <div className="download-row search-skeleton-row" key={row}>
+          <div className="skeleton search-thumb-skeleton" />
+          <div className="skeleton-copy">
+            <div className="skeleton line" />
+            <div className="skeleton line short" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

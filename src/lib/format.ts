@@ -24,6 +24,46 @@ export function formatBytes(bytes: number): string {
   }`;
 }
 
+export function formatViewCount(count: number | null): string {
+  if (count == null || !Number.isFinite(count) || count < 0) return "";
+  const compact = new Intl.NumberFormat("es", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(count);
+  return `${compact} visualizaciones`;
+}
+
+export type DurationFilter = "all" | "short" | "medium" | "long";
+
+export function matchesDurationFilter(
+  duration: number | null,
+  filter: DurationFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (duration == null || !Number.isFinite(duration)) return false;
+  if (filter === "short") return duration < 240;
+  if (filter === "medium") return duration >= 240 && duration <= 1800;
+  return duration > 1800;
+}
+
+export function previewEmbedUrl(
+  source: string,
+  id: string,
+  url: string,
+): string | null {
+  const normalized = source.toLowerCase();
+  if (normalized.includes("youtube")) {
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (normalized.includes("dailymotion")) {
+    return `https://www.dailymotion.com/embed/video/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (normalized.includes("soundcloud")) {
+    return `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=true`;
+  }
+  return null;
+}
+
 export function sourceLabel(extractor: string): string {
   const normalized = extractor.toLowerCase();
   if (normalized.includes("youtube")) return "YouTube";

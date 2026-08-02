@@ -66,6 +66,19 @@ struct MediaInfo {
     resolutions: Vec<u64>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchResult {
+    id: String,
+    url: String,
+    title: String,
+    uploader: Option<String>,
+    duration: Option<f64>,
+    thumbnail: Option<String>,
+    view_count: Option<u64>,
+    source: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadRequest {
@@ -572,6 +585,100 @@ fn analysis_args(
     args
 }
 
+fn search_args(query: &str, limit: u8, source: &str) -> Result<Vec<String>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("Escribe algo para buscar.".to_string());
+    }
+    if query.chars().count() > 300 {
+        return Err("La búsqueda es demasiado larga.".to_string());
+    }
+    let limit = limit.clamp(1, 30);
+    let mut args = vec![
+        "--ignore-config".to_string(),
+        "--no-warnings".to_string(),
+        "--dump-single-json".to_string(),
+        "--flat-playlist".to_string(),
+        "--skip-download".to_string(),
+        "--socket-timeout".to_string(),
+        "25".to_string(),
+        "--retries".to_string(),
+        "3".to_string(),
+        "--extractor-retries".to_string(),
+        "3".to_string(),
+    ];
+    match source {
+        "youtube" => args.push(format!("ytsearch{limit}:{query}")),
+        "soundcloud" => args.push(format!("scsearch{limit}:{query}")),
+        "dailymotion" => {
+            let mut search_url =
+                Url::parse("https://www.dailymotion.com").expect("URL base válida");
+            search_url
+                .path_segments_mut()
+                .expect("URL con segmentos")
+                .push("search")
+                .push(query)
+                .push("videos");
+            args.extend(["--playlist-items".to_string(), format!("1:{limit}")]);
+            args.push(search_url.to_string());
+        }
+        _ => return Err("La fuente de búsqueda no es compatible.".to_string()),
+    }
+    Ok(args)
+}
+
+fn search_results_from_json(value: &Value, source: &str) -> Vec<SearchResult> {
+    value
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            let url = entry
+                .get("url")
+                .or_else(|| entry.get("webpage_url"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    (entry.get("ie_key").and_then(Value::as_str) == Some("Youtube"))
+                        .then(|| format!("https://www.youtube.com/watch?v={id}"))
+                })?;
+            let is_youtube = source == "youtube"
+                || entry.get("ie_key").and_then(Value::as_str) == Some("Youtube");
+            let thumbnail = entry
+                .get("thumbnails")
+                .and_then(Value::as_array)
+                .and_then(|items| items.last())
+                .and_then(|thumb| thumb.get("url"))
+                .and_then(Value::as_str)
+                .or_else(|| entry.get("thumbnail").and_then(Value::as_str))
+                .map(str::to_string)
+                .or_else(|| {
+                    is_youtube.then(|| format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
+                });
+            Some(SearchResult {
+                id,
+                url,
+                title: entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Contenido sin título")
+                    .to_string(),
+                uploader: entry
+                    .get("uploader")
+                    .or_else(|| entry.get("channel"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                duration: entry.get("duration").and_then(Value::as_f64),
+                thumbnail,
+                view_count: entry.get("view_count").and_then(Value::as_u64),
+                source: source.to_string(),
+            })
+        })
+        .collect()
+}
+
 async fn run_analysis(app: &AppHandle, args: Vec<String>) -> Result<Value, String> {
     let output = yt_dlp_command(app)?
         .args(args)
@@ -683,6 +790,21 @@ async fn analyze_url(
         Err(error) => return Err(format!("No se pudo analizar el enlace. {error}")),
     };
     Ok(media_from_json(value, &url))
+}
+
+#[tauri::command]
+async fn search_media(
+    app: AppHandle,
+    query: String,
+    limit: Option<u8>,
+    source: Option<String>,
+) -> Result<Vec<SearchResult>, String> {
+    let source = source.unwrap_or_else(|| "youtube".to_string());
+    let args = search_args(&query, limit.unwrap_or(20), &source)?;
+    let value = run_analysis(&app, args)
+        .await
+        .map_err(|error| format!("No se pudo completar la búsqueda. {error}"))?;
+    Ok(search_results_from_json(&value, &source))
 }
 
 fn diagnose_error(raw: &str) -> ErrorDiagnosis {
@@ -1256,6 +1378,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_status,
             analyze_url,
+            search_media,
             check_engine_update,
             update_engine,
             start_download,
@@ -1323,6 +1446,96 @@ mod tests {
             next_strategy("network", 1),
             Some(CompatibilityStrategy::Ipv4)
         ));
+    }
+
+    #[test]
+    fn search_args_builds_flat_search() {
+        let args = search_args("ice mc ice ice baby", 20, "youtube").unwrap();
+        assert_eq!(args.last().unwrap(), "ytsearch20:ice mc ice ice baby");
+        assert!(args.contains(&"--flat-playlist".to_string()));
+        assert!(args.contains(&"--dump-single-json".to_string()));
+        assert!(!args.contains(&"--no-playlist".to_string()));
+
+        let soundcloud = search_args("ice mc", 5, "soundcloud").unwrap();
+        assert_eq!(soundcloud.last().unwrap(), "scsearch5:ice mc");
+    }
+
+    #[test]
+    fn search_args_builds_dailymotion_url() {
+        let args = search_args("ice mc", 10, "dailymotion").unwrap();
+        assert_eq!(
+            args.last().unwrap(),
+            "https://www.dailymotion.com/search/ice%20mc/videos"
+        );
+        let position = args
+            .iter()
+            .position(|arg| arg == "--playlist-items")
+            .expect("playlist-items presente");
+        assert_eq!(args[position + 1], "1:10");
+    }
+
+    #[test]
+    fn search_args_rejects_bad_input_and_clamps_limit() {
+        assert!(search_args("   ", 20, "youtube").is_err());
+        assert!(search_args("ice mc", 20, "vimeo").is_err());
+        let clamped = search_args("ice mc", 200, "youtube").unwrap();
+        assert_eq!(clamped.last().unwrap(), "ytsearch30:ice mc");
+    }
+
+    #[test]
+    fn parses_flat_search_entries() {
+        let value = serde_json::json!({
+            "_type": "playlist",
+            "entries": [
+                {
+                    "id": "abc123",
+                    "url": "https://www.youtube.com/watch?v=abc123",
+                    "title": "Think About The Way",
+                    "uploader": "Ice MC",
+                    "duration": 254.0,
+                    "view_count": 12_000_000u64,
+                    "thumbnails": [
+                        { "url": "https://i.ytimg.com/vi/abc123/default.jpg" },
+                        { "url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg" }
+                    ]
+                },
+                {
+                    "id": "def456",
+                    "ie_key": "Youtube",
+                    "title": "It's A Rainy Day",
+                    "channel": "Canal música",
+                    "thumbnail": "https://i.ytimg.com/vi/def456/default.jpg"
+                },
+                {
+                    "id": "ghi789",
+                    "url": "https://www.youtube.com/watch?v=ghi789",
+                    "title": "Sin miniatura en la respuesta"
+                },
+                { "title": "Entrada sin id" }
+            ]
+        });
+        let results = search_results_from_json(&value, "youtube");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].id, "abc123");
+        assert_eq!(
+            results[0].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/abc123/hqdefault.jpg")
+        );
+        assert_eq!(results[0].view_count, Some(12_000_000));
+        assert_eq!(
+            results[1].url,
+            "https://www.youtube.com/watch?v=def456"
+        );
+        assert_eq!(results[1].uploader.as_deref(), Some("Canal música"));
+        assert_eq!(
+            results[1].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/def456/default.jpg")
+        );
+        assert_eq!(results[1].source, "youtube");
+        assert_eq!(
+            results[2].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/ghi789/hqdefault.jpg")
+        );
     }
 
     #[test]

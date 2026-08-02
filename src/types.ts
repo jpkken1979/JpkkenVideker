@@ -1,4 +1,4 @@
-export type View = "home" | "downloads" | "settings";
+export type View = "home" | "search" | "downloads" | "settings";
 export type MediaKind = "video" | "audio";
 export type DownloadStatus =
   | "queued"
@@ -25,6 +25,19 @@ export interface EngineUpdateInfo {
   latestVersion: string;
   updateAvailable: boolean;
   source: "bundled" | "updated";
+}
+
+export type SearchSource = "youtube" | "soundcloud" | "dailymotion";
+
+export interface SearchResult {
+  id: string;
+  url: string;
+  title: string;
+  uploader: string | null;
+  duration: number | null;
+  thumbnail: string | null;
+  viewCount: number | null;
+  source: string;
 }
 
 export interface MediaInfo {

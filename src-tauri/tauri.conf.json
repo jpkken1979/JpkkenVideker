@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: https: http: asset:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: https: http: asset:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' https://www.youtube-nocookie.com https://www.youtube.com https://www.dailymotion.com https://w.soundcloud.com"
     }
   },
   "bundle": {
