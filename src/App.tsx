@@ -45,11 +45,18 @@ import {
   checkEngineUpdate,
   chooseDirectory,
   getAppStatus,
+  openExternal,
   revealDirectory,
   runningInTauri,
+  searchMedia,
   updateEngine,
 } from "./lib/bridge";
-import { formatDuration, qualityLabel, sourceLabel } from "./lib/format";
+import {
+  formatDuration,
+  formatViewCount,
+  qualityLabel,
+  sourceLabel,
+} from "./lib/format";
 import type {
   AppStatus,
   DownloadEvent,
@@ -57,6 +64,8 @@ import type {
   DownloadRequest,
   EngineUpdateInfo,
   MediaInfo,
+  SearchResult,
+  SearchSource,
   UserSettings,
   View,
 } from "./types";
@@ -156,6 +165,11 @@ function App() {
   const [url, setUrl] = useState("");
   const [media, setMedia] = useState<MediaInfo | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchSource, setSearchSource] = useState<SearchSource>("youtube");
+  const [searchPerformed, setSearchPerformed] = useState(false);
   const [notice, setNotice] = useState<{
     tone: "success" | "error" | "neutral";
     message: string;
@@ -248,9 +262,46 @@ function App() {
     }
   }
 
-  async function handleAnalyze() {
-    const cleanUrl = url.trim();
+  async function handleSearch(rawQuery?: string, source?: SearchSource) {
+    const cleanQuery = (rawQuery ?? searchQuery).trim();
+    if (!cleanQuery) {
+      showNotice("error", "Escribe algo para buscar.");
+      return;
+    }
+    if (appStatus && !appStatus.ytDlpReady) {
+      showNotice("error", "Falta el motor yt-dlp. Reinstala JpkkenVideker o ejecuta npm run sidecars.");
+      return;
+    }
+    setSearching(true);
+    try {
+      const results = await searchMedia(cleanQuery, 20, source ?? searchSource);
+      setSearchResults(results);
+      setSearchPerformed(true);
+    } catch (error) {
+      showNotice("error", String(error));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function handleSelectResult(resultUrl: string) {
+    setUrl(resultUrl);
+    setView("home");
+    void handleAnalyze(resultUrl);
+  }
+
+  async function handleAnalyze(overrideUrl?: string) {
+    const cleanUrl = (overrideUrl ?? url).trim();
     if (!isValidUrl(cleanUrl)) {
+      if (cleanUrl && overrideUrl === undefined) {
+        setSearchQuery(cleanUrl);
+        setSearchResults([]);
+        setSearchPerformed(false);
+        setView("search");
+        showNotice("neutral", "Eso no parece un enlace; buscándolo por ti.");
+        void handleSearch(cleanUrl);
+        return;
+      }
       showNotice("error", "Pega un enlace válido que empiece por http o https.");
       return;
     }
@@ -530,6 +581,7 @@ function App() {
 
   const navItems = [
     { id: "home" as const, label: "Inicio", icon: Home },
+    { id: "search" as const, label: "Buscar", icon: Search },
     {
       id: "downloads" as const,
       label: "Descargas",
@@ -625,10 +677,29 @@ function App() {
             setSettings={updateSettings}
             appStatus={appStatus}
             onPaste={handlePaste}
-            onAnalyze={handleAnalyze}
+            onAnalyze={() => void handleAnalyze()}
             onChooseDirectory={handleChooseDirectory}
             onDownload={handleDownload}
             completedDownloads={completedDownloads}
+          />
+        )}
+        {view === "search" && (
+          <SearchView
+            query={searchQuery}
+            setQuery={setSearchQuery}
+            results={searchResults}
+            searching={searching}
+            source={searchSource}
+            setSource={(source) => {
+              setSearchSource(source);
+              if (searchQuery.trim() && searchPerformed) {
+                void handleSearch(undefined, source);
+              }
+            }}
+            searchPerformed={searchPerformed}
+            onSearch={() => void handleSearch()}
+            onSelectResult={handleSelectResult}
+            onOpenExternal={(resultUrl) => void openExternal(resultUrl)}
           />
         )}
         {view === "downloads" && (
@@ -863,6 +934,204 @@ function HomeView({
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+interface SearchViewProps {
+  query: string;
+  setQuery: (value: string) => void;
+  results: SearchResult[];
+  searching: boolean;
+  source: SearchSource;
+  setSource: (source: SearchSource) => void;
+  searchPerformed: boolean;
+  onSearch: () => void;
+  onSelectResult: (url: string) => void;
+  onOpenExternal: (url: string) => void;
+}
+
+const searchSources: { id: SearchSource; label: string }[] = [
+  { id: "youtube", label: "YouTube" },
+  { id: "soundcloud", label: "SoundCloud" },
+  { id: "dailymotion", label: "Dailymotion" },
+];
+
+function SearchView({
+  query,
+  setQuery,
+  results,
+  searching,
+  source,
+  setSource,
+  searchPerformed,
+  onSearch,
+  onSelectResult,
+  onOpenExternal,
+}: SearchViewProps) {
+  return (
+    <div className="page search-page">
+      <header className="section-header">
+        <div>
+          <p className="eyebrow">ENCUENTRA SIN SALIR</p>
+          <h1>Buscar</h1>
+          <p>
+            Escribe un artista, canción o vídeo y descárgalo sin abrir el
+            navegador.
+          </p>
+        </div>
+      </header>
+
+      <section className="capture-card">
+        <div className={`url-field ${searching ? "loading" : ""}`}>
+          <Search size={20} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSearch();
+            }}
+            placeholder="Ej. Ice MC — Think About The Way"
+            aria-label="Qué quieres buscar"
+            spellCheck={false}
+          />
+          {query ? (
+            <button
+              className="icon-button subtle"
+              onClick={() => setQuery("")}
+              aria-label="Borrar búsqueda"
+            >
+              <X size={17} />
+            </button>
+          ) : null}
+          <button
+            className="primary-button analyze-button"
+            onClick={onSearch}
+            disabled={searching}
+          >
+            {searching ? (
+              <LoaderCircle className="spin" size={18} />
+            ) : (
+              <Search size={18} />
+            )}
+            {searching ? "Buscando…" : "Buscar"}
+          </button>
+        </div>
+
+        <div
+          className="segmented-control search-sources"
+          role="group"
+          aria-label="Fuente de búsqueda"
+        >
+          {searchSources.map((item) => (
+            <button
+              key={item.id}
+              className={source === item.id ? "active" : ""}
+              aria-pressed={source === item.id}
+              onClick={() => setSource(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {searching && <SearchSkeleton />}
+
+      {!searching && results.length > 0 && (
+        <div className="download-list search-results">
+          {results.map((result) => (
+            <article className="download-row result-row" key={result.id}>
+              <div className="download-thumb">
+                {result.thumbnail ? (
+                  <img
+                    src={result.thumbnail}
+                    alt={`Miniatura de ${result.title}`}
+                    loading="lazy"
+                  />
+                ) : (
+                  <Film size={26} />
+                )}
+              </div>
+              <div className="download-main">
+                <div className="download-title-line">
+                  <div>
+                    <h3>{result.title}</h3>
+                    <p>{result.uploader || "Autor desconocido"}</p>
+                  </div>
+                </div>
+                <div className="result-meta">
+                  <span>
+                    <Clock3 size={14} />
+                    {formatDuration(result.duration)}
+                  </span>
+                  {formatViewCount(result.viewCount) ? (
+                    <span>{formatViewCount(result.viewCount)}</span>
+                  ) : null}
+                  <span>{sourceLabel(result.source)}</span>
+                </div>
+              </div>
+              <div className="row-actions">
+                <button
+                  className="primary-button result-download"
+                  onClick={() => onSelectResult(result.url)}
+                >
+                  <Download size={16} />
+                  Descargar
+                </button>
+                <button
+                  className="icon-button"
+                  onClick={() => onOpenExternal(result.url)}
+                  aria-label={`Abrir ${result.title} en el navegador`}
+                  title="Abrir en el navegador"
+                >
+                  <ExternalLink size={17} />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {!searching && searchPerformed && !results.length && (
+        <div className="no-results">
+          <Search size={24} />
+          <p>No encontramos nada con ese texto. Prueba con otras palabras.</p>
+        </div>
+      )}
+
+      {!searching && !searchPerformed && !results.length && (
+        <div className="empty-state">
+          <div className="empty-illustration">
+            <div className="empty-orbit orbit-one" />
+            <div className="empty-orbit orbit-two" />
+            <span>
+              <Search size={36} />
+            </span>
+          </div>
+          <h2>Encuentra música y vídeos</h2>
+          <p>
+            Busca en YouTube, SoundCloud o Dailymotion y descarga el resultado
+            con un clic.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchSkeleton() {
+  return (
+    <div className="download-list search-results" aria-label="Buscando">
+      {[1, 2, 3].map((row) => (
+        <div className="download-row search-skeleton-row" key={row}>
+          <div className="skeleton search-thumb-skeleton" />
+          <div className="skeleton-copy">
+            <div className="skeleton line" />
+            <div className="skeleton line short" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

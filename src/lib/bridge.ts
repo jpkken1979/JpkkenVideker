@@ -1,12 +1,14 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AppStatus,
   DownloadEvent,
   DownloadRequest,
   EngineUpdateInfo,
   MediaInfo,
+  SearchResult,
+  SearchSource,
 } from "../types";
 
 const mockMedia: MediaInfo = {
@@ -22,6 +24,52 @@ const mockMedia: MediaInfo = {
   playlistCount: null,
   resolutions: [2160, 1440, 1080, 720, 480],
 };
+
+const mockSearchResults: SearchResult[] = [
+  {
+    id: "mock-1",
+    url: "https://example.com/video-1",
+    title: "Videoclip oficial",
+    uploader: "Canal creativo",
+    duration: 248,
+    thumbnail:
+      "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=640&q=80",
+    viewCount: 12_400_000,
+    source: "youtube",
+  },
+  {
+    id: "mock-2",
+    url: "https://example.com/video-2",
+    title: "Presentación en vivo (1994)",
+    uploader: "Archivo musical",
+    duration: 312,
+    thumbnail:
+      "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?auto=format&fit=crop&w=640&q=80",
+    viewCount: 830_000,
+    source: "youtube",
+  },
+  {
+    id: "mock-3",
+    url: "https://example.com/video-3",
+    title: "Mezcla extendida",
+    uploader: null,
+    duration: 512,
+    thumbnail: null,
+    viewCount: 45_000,
+    source: "youtube",
+  },
+  {
+    id: "mock-4",
+    url: "https://example.com/video-4",
+    title: "Entrevista completa",
+    uploader: "Estudio independiente",
+    duration: null,
+    thumbnail:
+      "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?auto=format&fit=crop&w=640&q=80",
+    viewCount: null,
+    source: "youtube",
+  },
+];
 
 export const runningInTauri = isTauri();
 
@@ -59,6 +107,31 @@ export async function analyzeUrl(
     useDeno,
     compatibilityMode,
   });
+}
+
+export async function searchMedia(
+  query: string,
+  limit = 20,
+  source: SearchSource = "youtube",
+): Promise<SearchResult[]> {
+  if (!runningInTauri) {
+    await new Promise((resolve) => window.setTimeout(resolve, 700));
+    return mockSearchResults.map((result, index) => ({
+      ...result,
+      title: `${query} — ${result.title}`,
+      source,
+      id: `${source}-mock-${index + 1}`,
+    }));
+  }
+  return invoke<SearchResult[]>("search_media", { query, limit, source });
+}
+
+export async function openExternal(url: string): Promise<void> {
+  if (!runningInTauri) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  await openUrl(url);
 }
 
 export async function checkEngineUpdate(): Promise<EngineUpdateInfo> {

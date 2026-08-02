@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   formatDuration,
+  formatViewCount,
   qualityLabel,
   sourceLabel,
 } from "./format";
@@ -17,6 +18,13 @@ describe("format helpers", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(10 * 1024 * 1024)).toBe("10 MB");
+  });
+
+  it("formats view counts compactly in Spanish", () => {
+    expect(formatViewCount(999)).toBe("999 visualizaciones");
+    expect(formatViewCount(1_234_567)).toContain("M visualizaciones");
+    expect(formatViewCount(null)).toBe("");
+    expect(formatViewCount(-5)).toBe("");
   });
 
   it("creates friendly source and quality labels", () => {
