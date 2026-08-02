@@ -33,6 +33,24 @@ export function formatViewCount(count: number | null): string {
   return `${compact} visualizaciones`;
 }
 
+export function previewEmbedUrl(
+  source: string,
+  id: string,
+  url: string,
+): string | null {
+  const normalized = source.toLowerCase();
+  if (normalized.includes("youtube")) {
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (normalized.includes("dailymotion")) {
+    return `https://www.dailymotion.com/embed/video/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (normalized.includes("soundcloud")) {
+    return `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=true`;
+  }
+  return null;
+}
+
 export function sourceLabel(extractor: string): string {
   const normalized = extractor.toLowerCase();
   if (normalized.includes("youtube")) return "YouTube";

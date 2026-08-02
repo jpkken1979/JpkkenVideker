@@ -24,6 +24,7 @@ import {
   Moon,
   MoreHorizontal,
   Music2,
+  Play,
   RefreshCw,
   Search,
   Settings,
@@ -54,6 +55,7 @@ import {
 import {
   formatDuration,
   formatViewCount,
+  previewEmbedUrl,
   qualityLabel,
   sourceLabel,
 } from "./lib/format";
@@ -969,6 +971,21 @@ function SearchView({
   onSelectResult,
   onOpenExternal,
 }: SearchViewProps) {
+  const [preview, setPreview] = useState<SearchResult | null>(null);
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreview(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [preview]);
+
+  const previewSrc = preview
+    ? previewEmbedUrl(preview.source, preview.id, preview.url)
+    : null;
+
   return (
     <div className="page search-page">
       <header className="section-header">
@@ -1073,6 +1090,14 @@ function SearchView({
               </div>
               <div className="row-actions">
                 <button
+                  className="icon-button preview-trigger"
+                  onClick={() => setPreview(result)}
+                  aria-label={`Vista previa de ${result.title}`}
+                  title="Vista previa"
+                >
+                  <Play size={17} />
+                </button>
+                <button
                   className="primary-button result-download"
                   onClick={() => onSelectResult(result.url)}
                 >
@@ -1114,6 +1139,73 @@ function SearchView({
             Busca en YouTube, SoundCloud o Dailymotion y descarga el resultado
             con un clic.
           </p>
+        </div>
+      )}
+
+      {preview && (
+        <div
+          className="preview-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Vista previa de ${preview.title}`}
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="preview-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="preview-header">
+              <div>
+                <p className="eyebrow">VISTA PREVIA</p>
+                <h3>{preview.title}</h3>
+              </div>
+              <button
+                className="icon-button subtle"
+                onClick={() => setPreview(null)}
+                aria-label="Cerrar vista previa"
+              >
+                <X size={18} />
+              </button>
+            </header>
+            {previewSrc ? (
+              <div className="preview-frame">
+                <iframe
+                  src={previewSrc}
+                  title={`Reproductor de ${preview.title}`}
+                  allow="autoplay; encrypted-media; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            ) : (
+              <div className="preview-unavailable">
+                <Info size={20} />
+                <p>
+                  Esta fuente no permite vista previa integrada. Ábrela en el
+                  navegador para comprobar el contenido.
+                </p>
+              </div>
+            )}
+            <footer className="preview-footer">
+              <button
+                className="primary-button"
+                onClick={() => {
+                  const selected = preview.url;
+                  setPreview(null);
+                  onSelectResult(selected);
+                }}
+              >
+                <Download size={16} />
+                Sí, descargar este
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => onOpenExternal(preview.url)}
+              >
+                <ExternalLink size={16} />
+                Abrir en el navegador
+              </button>
+            </footer>
+          </div>
         </div>
       )}
     </div>

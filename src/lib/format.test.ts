@@ -3,6 +3,7 @@ import {
   formatBytes,
   formatDuration,
   formatViewCount,
+  previewEmbedUrl,
   qualityLabel,
   sourceLabel,
 } from "./format";
@@ -25,6 +26,21 @@ describe("format helpers", () => {
     expect(formatViewCount(1_234_567)).toContain("M visualizaciones");
     expect(formatViewCount(null)).toBe("");
     expect(formatViewCount(-5)).toBe("");
+  });
+
+  it("builds preview embed urls per source", () => {
+    expect(previewEmbedUrl("youtube", "abc123", "https://youtube.com/watch?v=abc123")).toBe(
+      "https://www.youtube-nocookie.com/embed/abc123?autoplay=1",
+    );
+    expect(previewEmbedUrl("dailymotion", "x9fkzy", "https://dailymotion.com/video/x9fkzy")).toBe(
+      "https://www.dailymotion.com/embed/video/x9fkzy?autoplay=1",
+    );
+    expect(
+      previewEmbedUrl("soundcloud", "track-1", "https://soundcloud.com/a/b"),
+    ).toBe(
+      "https://w.soundcloud.com/player/?url=https%3A%2F%2Fsoundcloud.com%2Fa%2Fb&auto_play=true",
+    );
+    expect(previewEmbedUrl("vimeo", "1", "https://vimeo.com/1")).toBeNull();
   });
 
   it("creates friendly source and quality labels", () => {
