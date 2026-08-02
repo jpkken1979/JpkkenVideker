@@ -1,8 +1,14 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type {
   AppStatus,
+  AppUpdateInfo,
   DownloadEvent,
   DownloadRequest,
   EngineUpdateInfo,
@@ -136,6 +142,39 @@ export async function createRingtone(request: RingtoneRequest): Promise<string> 
     )}s).${extension}`;
   }
   return invoke<string>("create_ringtone", { request });
+}
+
+export async function notifyUser(title: string, body: string): Promise<void> {
+  try {
+    if (!runningInTauri) {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(title, { body });
+      }
+      return;
+    }
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      granted = (await requestPermission()) === "granted";
+    }
+    if (granted) {
+      sendNotification({ title, body });
+    }
+  } catch {
+    // Las notificaciones nunca deben romper el flujo de descarga.
+  }
+}
+
+export async function checkAppUpdate(): Promise<AppUpdateInfo> {
+  if (!runningInTauri) {
+    await new Promise((resolve) => window.setTimeout(resolve, 600));
+    return {
+      currentVersion: "0.1.0",
+      latestVersion: "0.2.0",
+      updateAvailable: true,
+      downloadUrl: "https://github.com/jpkken1979/JpkkenVideker/releases/latest",
+    };
+  }
+  return invoke<AppUpdateInfo>("check_app_update");
 }
 
 export async function openExternal(url: string): Promise<void> {

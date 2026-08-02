@@ -24,13 +24,17 @@ export function formatBytes(bytes: number): string {
   }`;
 }
 
-export function formatViewCount(count: number | null): string {
+export function formatViewCount(
+  count: number | null,
+  locale = "es",
+  viewsLabel = "visualizaciones",
+): string {
   if (count == null || !Number.isFinite(count) || count < 0) return "";
-  const compact = new Intl.NumberFormat("es", {
+  const compact = new Intl.NumberFormat(locale, {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(count);
-  return `${compact} visualizaciones`;
+  return `${compact} ${viewsLabel}`;
 }
 
 export function parseTimeInput(value: string): number | null {

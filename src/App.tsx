@@ -44,16 +44,19 @@ import {
   analyzeUrl,
   beginDownload,
   cancelDownload,
+  checkAppUpdate,
   checkEngineUpdate,
   chooseDirectory,
   createRingtone,
   getAppStatus,
+  notifyUser,
   openExternal,
   revealDirectory,
   runningInTauri,
   searchMedia,
   updateEngine,
 } from "./lib/bridge";
+import { dictionaries, isRtl, languageNames, type Lang, type Messages } from "./i18n";
 import {
   formatDuration,
   formatViewCount,
@@ -66,6 +69,7 @@ import {
 } from "./lib/format";
 import type {
   AppStatus,
+  AppUpdateInfo,
   DownloadEvent,
   DownloadItem,
   DownloadRequest,
@@ -87,6 +91,7 @@ const WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const defaultSettings: UserSettings = {
   theme: "dark",
+  language: "es",
   downloadDir: "",
   kind: "video",
   videoFormat: "mp4",
@@ -123,15 +128,15 @@ function isValidUrl(value: string): boolean {
   }
 }
 
-function statusText(status: DownloadItem["status"]): string {
+function statusText(status: DownloadItem["status"], t: Messages): string {
   const labels = {
-    queued: "En cola",
-    downloading: "Descargando",
-    retrying: "Reparando conexión",
-    processing: "Preparando archivo",
-    completed: "Completado",
-    failed: "No se pudo descargar",
-    cancelled: "Cancelado",
+    queued: t.downloads.statusQueued,
+    downloading: t.downloads.statusDownloading,
+    retrying: t.downloads.statusRetrying,
+    processing: t.downloads.statusProcessing,
+    completed: t.downloads.statusCompleted,
+    failed: t.downloads.statusFailed,
+    cancelled: t.downloads.statusCancelled,
   };
   return labels[status];
 }
@@ -192,7 +197,11 @@ function App() {
   const [engineUpdate, setEngineUpdate] =
     useState<EngineUpdateInfo | null>(null);
   const [updatingEngine, setUpdatingEngine] = useState(false);
+  const [appUpdate, setAppUpdate] = useState<AppUpdateInfo | null>(null);
+  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const noticeTimer = useRef<number | null>(null);
+
+  const t = dictionaries[settings.language];
 
   const activeDownloads = downloads.filter(
     (item) =>
@@ -206,6 +215,8 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
+    document.documentElement.lang = settings.language;
+    document.documentElement.dir = isRtl(settings.language) ? "rtl" : "ltr";
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
@@ -252,11 +263,11 @@ function App() {
         setAppStatus(await getAppStatus());
         showNotice(
           "success",
-          `Motor actualizado y verificado: yt-dlp ${updated.latestVersion}.`,
+          t.notices.engineUpdatedTo(updated.latestVersion),
         );
       })
       .catch((error) => {
-        showNotice("neutral", `Actualización automática pendiente: ${error}`);
+        showNotice("neutral", t.notices.autoUpdatePending(String(error)));
       })
       .finally(() => setUpdatingEngine(false));
   }, []);
@@ -279,18 +290,18 @@ function App() {
       const text = await navigator.clipboard.readText();
       if (text) setUrl(text.trim());
     } catch {
-      showNotice("neutral", "Usa Ctrl+V para pegar el enlace.");
+      showNotice("neutral", t.notices.pasteHint);
     }
   }
 
   async function handleSearch(rawQuery?: string, source?: SearchSource) {
     const cleanQuery = (rawQuery ?? searchQuery).trim();
     if (!cleanQuery) {
-      showNotice("error", "Escribe algo para buscar.");
+      showNotice("error", t.notices.typeSomething);
       return;
     }
     if (appStatus && !appStatus.ytDlpReady) {
-      showNotice("error", "Falta el motor yt-dlp. Reinstala JpkkenVideker o ejecuta npm run sidecars.");
+      showNotice("error", t.notices.engineMissing);
       return;
     }
     setSearching(true);
@@ -332,15 +343,15 @@ function App() {
         setSearchResults([]);
         setSearchPerformed(false);
         setView("search");
-        showNotice("neutral", "Eso no parece un enlace; buscándolo por ti.");
+        showNotice("neutral", t.notices.notALink);
         void handleSearch(cleanUrl);
         return;
       }
-      showNotice("error", "Pega un enlace válido que empiece por http o https.");
+      showNotice("error", t.notices.invalidLink);
       return;
     }
     if (appStatus && !appStatus.ytDlpReady) {
-      showNotice("error", "Falta el motor yt-dlp. Reinstala JpkkenVideker o ejecuta npm run sidecars.");
+      showNotice("error", t.notices.engineMissing);
       return;
     }
 
@@ -355,7 +366,7 @@ function App() {
         settings.compatibilityMode,
       );
       setMedia(result);
-      showNotice("success", "Enlace listo. Elige el formato y la calidad.");
+      showNotice("success", t.notices.linkReady);
     } catch (error) {
       showNotice("error", String(error));
     } finally {
@@ -405,6 +416,14 @@ function App() {
               retryAttempt: event.data.attempt,
             };
           case "completed":
+            if (!document.hasFocus()) {
+              queueMicrotask(() =>
+                void notifyUser(
+                  t.notifications.completedTitle,
+                  t.notifications.completedBody(item.title),
+                ),
+              );
+            }
             return {
               ...item,
               status: "completed",
@@ -414,6 +433,14 @@ function App() {
               filePath: event.data.filePath,
             };
           case "failed":
+            if (!document.hasFocus()) {
+              queueMicrotask(() =>
+                void notifyUser(
+                  t.notifications.failedTitle,
+                  t.notifications.failedBody(item.title),
+                ),
+              );
+            }
             return {
               ...item,
               status: "failed",
@@ -438,10 +465,10 @@ function App() {
       uploader: string | null;
       thumbnail: string | null;
     },
-    noticeMessage = "Descarga añadida a la cola.",
+    noticeMessage = t.notices.queueAdded,
   ) {
     if (!settings.downloadDir) {
-      showNotice("error", "Elige primero una carpeta de destino.");
+      showNotice("error", t.notices.chooseFolderFirst);
       return;
     }
     const id = crypto.randomUUID();
@@ -476,7 +503,7 @@ function App() {
       id,
       url: info.url,
       title: info.title,
-      uploader: info.uploader || "Autor desconocido",
+      uploader: info.uploader || t.home.unknownUploader,
       thumbnail: info.thumbnail,
       kind: settings.kind,
       format,
@@ -505,16 +532,13 @@ function App() {
         event: "failed",
         data: {
           jobId: id,
-          message: "No se pudo iniciar el motor de descarga.",
+          message: t.notices.downloadStartFailed,
           category: "startup",
-          suggestions: [
-            "Comprueba los componentes desde Ajustes.",
-            "Copia el diagnóstico técnico si el problema continúa.",
-          ],
+          suggestions: [t.notices.startupSuggestion1, t.notices.startupSuggestion2],
           technicalDetails: String(error),
         },
       });
-      showNotice("error", "La descarga terminó con un error.");
+      showNotice("error", t.notices.downloadEndedWithError);
     }
   }
 
@@ -530,7 +554,7 @@ function App() {
 
   async function handleQuickDownload(result: SearchResult) {
     if (!settings.downloadDir) {
-      showNotice("error", "Elige primero una carpeta de destino en Ajustes.");
+      showNotice("error", t.notices.chooseFolderSettings);
       setView("settings");
       return;
     }
@@ -545,10 +569,10 @@ function App() {
         uploader: result.uploader,
         thumbnail: result.thumbnail,
       },
-      `Descarga rápida añadida (${format.toUpperCase()} · ${qualityLabel(
-        quality,
-        settings.kind,
-      )}).`,
+      t.notices.quickAdded(
+        format.toUpperCase(),
+        qualityLabel(quality, settings.kind),
+      ),
     );
   }
 
@@ -574,7 +598,7 @@ function App() {
       concurrentFragments: 1,
     };
     if (!request.outputDir) {
-      showNotice("error", "Elige una carpeta de destino antes de reparar.");
+      showNotice("error", t.notices.chooseFolderRepair);
       setView("settings");
       return;
     }
@@ -595,10 +619,7 @@ function App() {
       createdAt: Date.now(),
     };
     setDownloads((current) => [repaired, ...current]);
-    showNotice(
-      "neutral",
-      "Reparación iniciada con una conexión más conservadora.",
-    );
+    showNotice("neutral", t.notices.repairStarted);
     try {
       await beginDownload(request, applyDownloadEvent);
     } catch (error) {
@@ -606,9 +627,9 @@ function App() {
         event: "failed",
         data: {
           jobId: id,
-          message: "No se pudo iniciar la reparación.",
+          message: t.notices.repairStartFailed,
           category: "startup",
-          suggestions: ["Comprueba los componentes desde Ajustes."],
+          suggestions: [t.notices.startupSuggestion1],
           technicalDetails: String(error),
         },
       });
@@ -621,20 +642,14 @@ function App() {
       const available = await checkEngineUpdate();
       setEngineUpdate(available);
       if (!available.updateAvailable) {
-        showNotice(
-          "success",
-          `El motor ya está al día (${available.latestVersion}).`,
-        );
+        showNotice("success", t.notices.engineUpToDate(available.latestVersion));
         return;
       }
       const updated = await updateEngine();
       setEngineUpdate(updated);
       setAppStatus(await getAppStatus());
       window.localStorage.setItem(ENGINE_CHECK_KEY, String(Date.now()));
-      showNotice(
-        "success",
-        `Motor actualizado y verificado: yt-dlp ${updated.latestVersion}.`,
-      );
+      showNotice("success", t.notices.engineUpdatedTo(updated.latestVersion));
     } catch (error) {
       showNotice("error", String(error));
     } finally {
@@ -642,13 +657,31 @@ function App() {
     }
   }
 
+  async function handleAppUpdateCheck() {
+    setCheckingAppUpdate(true);
+    try {
+      const info = await checkAppUpdate();
+      setAppUpdate(info);
+      showNotice(
+        info.updateAvailable ? "neutral" : "success",
+        info.updateAvailable
+          ? t.notices.appUpdateFound(info.latestVersion)
+          : t.notices.appUpToDate,
+      );
+    } catch (error) {
+      showNotice("error", String(error));
+    } finally {
+      setCheckingAppUpdate(false);
+    }
+  }
+
   function openRingtoneModal(item: DownloadItem) {
     if (appStatus && !appStatus.ffmpegReady) {
-      showNotice("error", "Falta el componente ffmpeg para crear tonos. Reinstala JpkkenVideker.");
+      showNotice("error", t.notices.ffmpegMissing);
       return;
     }
     if (!settings.downloadDir) {
-      showNotice("error", "Elige primero una carpeta de destino en Ajustes.");
+      showNotice("error", t.notices.chooseFolderSettings);
       setView("settings");
       return;
     }
@@ -668,15 +701,15 @@ function App() {
   }
 
   const navItems = [
-    { id: "home" as const, label: "Inicio", icon: Home },
-    { id: "search" as const, label: "Buscar", icon: Search },
+    { id: "home" as const, label: t.nav.home, icon: Home },
+    { id: "search" as const, label: t.nav.search, icon: Search },
     {
       id: "downloads" as const,
-      label: "Descargas",
+      label: t.nav.downloads,
       icon: ArrowDownToLine,
       badge: activeDownloads || undefined,
     },
-    { id: "settings" as const, label: "Ajustes", icon: Settings },
+    { id: "settings" as const, label: t.nav.settings, icon: Settings },
   ];
 
   return (
@@ -684,7 +717,7 @@ function App() {
       <button
         className="mobile-menu"
         onClick={() => setSidebarOpen((value) => !value)}
-        aria-label={sidebarOpen ? "Cerrar navegación" : "Abrir navegación"}
+        aria-label={sidebarOpen ? t.nav.closeNav : t.nav.openNav}
         aria-expanded={sidebarOpen}
         aria-controls="primary-sidebar"
       >
@@ -699,12 +732,12 @@ function App() {
           <img src={logo} alt="" />
           <div>
             <strong>JpkkenVideker</strong>
-            <span>media, a tu manera</span>
+            <span>{t.nav.tagline}</span>
           </div>
         </div>
 
-        <nav aria-label="Navegación principal">
-          <p className="eyebrow nav-label">TU ESPACIO</p>
+        <nav aria-label={t.nav.mainNavigation}>
+          <p className="eyebrow nav-label">{t.nav.yourSpace}</p>
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -734,14 +767,14 @@ function App() {
                 appStatus?.ytDlpReady && appStatus?.ffmpegReady ? "ready" : ""
               }`}
             />
-            <strong>Motor de JpkkenVideker</strong>
+            <strong>{t.nav.engineTitle}</strong>
           </div>
           <p>
             {appStatus
               ? appStatus.ytDlpReady && appStatus.ffmpegReady
-                ? "Listo para descargar"
-                : "Requiere atención"
-              : "Comprobando componentes…"}
+                ? t.nav.engineReady
+                : t.nav.engineAttention
+              : t.nav.engineChecking}
           </p>
           {appStatus?.ytDlpVersion ? (
             <span className="engine-version">yt-dlp {appStatus.ytDlpVersion}</span>
@@ -750,13 +783,14 @@ function App() {
 
         <div className="legal-note">
           <ShieldCheck size={16} />
-          <p>Descarga solo contenido propio o que tengas permiso para guardar.</p>
+          <p>{t.nav.legalNote}</p>
         </div>
       </aside>
 
       <main className="main-content">
         {view === "home" && (
           <HomeView
+            t={t}
             url={url}
             setUrl={setUrl}
             media={media}
@@ -773,6 +807,8 @@ function App() {
         )}
         {view === "search" && (
           <SearchView
+            t={t}
+            lang={settings.language}
             query={searchQuery}
             setQuery={setSearchQuery}
             results={searchResults}
@@ -796,6 +832,8 @@ function App() {
         )}
         {view === "downloads" && (
           <DownloadsView
+            t={t}
+            lang={settings.language}
             downloads={downloads}
             downloadDir={settings.downloadDir}
             onCancel={handleCancel}
@@ -808,6 +846,7 @@ function App() {
         )}
         {view === "settings" && (
           <SettingsView
+            t={t}
             settings={settings}
             appStatus={appStatus}
             setSettings={updateSettings}
@@ -818,12 +857,17 @@ function App() {
             engineUpdate={engineUpdate}
             updatingEngine={updatingEngine}
             onUpdateEngine={() => void handleEngineUpdate()}
+            appUpdate={appUpdate}
+            checkingAppUpdate={checkingAppUpdate}
+            onCheckAppUpdate={() => void handleAppUpdateCheck()}
+            onOpenUrl={(url: string) => void openExternal(url)}
           />
         )}
       </main>
 
       {ringtoneItem && (
         <RingtoneModal
+          t={t}
           item={ringtoneItem}
           outputDir={settings.downloadDir}
           onClose={() => setRingtoneItem(null)}
@@ -846,7 +890,7 @@ function App() {
             <Info size={18} />
           )}
           <span>{notice.message}</span>
-          <button onClick={() => setNotice(null)} aria-label="Cerrar aviso">
+          <button onClick={() => setNotice(null)} aria-label={t.ringtone.close}>
             <X size={16} />
           </button>
         </div>
@@ -856,6 +900,7 @@ function App() {
 }
 
 interface HomeViewProps {
+  t: Messages;
   url: string;
   setUrl: (value: string) => void;
   media: MediaInfo | null;
@@ -871,6 +916,7 @@ interface HomeViewProps {
 }
 
 function HomeView({
+  t,
   url,
   setUrl,
   media,
@@ -888,14 +934,11 @@ function HomeView({
     <div className="page home-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">DESCARGAS SIN RUIDO</p>
+          <p className="eyebrow">{t.home.eyebrow}</p>
           <h1>
-            Guarda lo que <span>te importa.</span>
+            {t.home.titleStart} <span>{t.home.titleAccent}</span>
           </h1>
-          <p className="header-copy">
-            Vídeo, música y playlists de más de mil sitios compatibles, con el
-            formato exacto que necesitas.
-          </p>
+          <p className="header-copy">{t.home.headerCopy}</p>
         </div>
         <div className="header-stats">
           <div>
@@ -904,7 +947,7 @@ function HomeView({
             </span>
             <p>
               <strong>{completedDownloads}</strong>
-              <span>guardados</span>
+              <span>{t.home.statSaved}</span>
             </p>
           </div>
           <div>
@@ -913,7 +956,7 @@ function HomeView({
             </span>
             <p>
               <strong>1000+</strong>
-              <span>sitios</span>
+              <span>{t.home.statSites}</span>
             </p>
           </div>
         </div>
@@ -926,13 +969,13 @@ function HomeView({
               <Link2 size={19} />
             </span>
             <div>
-              <h2>Pega un enlace</h2>
-              <p>YouTube, Dailymotion, Vimeo, TikTok, SoundCloud y más</p>
+              <h2>{t.home.pasteTitle}</h2>
+              <p>{t.home.pasteSubtitle}</p>
             </div>
           </div>
           <span className="privacy-pill">
             <ShieldCheck size={14} />
-            Procesado en tu equipo
+            {t.home.privacyPill}
           </span>
         </div>
 
@@ -944,21 +987,21 @@ function HomeView({
             onKeyDown={(event) => {
               if (event.key === "Enter") onAnalyze();
             }}
-            placeholder="https://www.youtube.com/watch?v=…"
-            aria-label="Enlace del vídeo o audio"
+            placeholder={t.home.urlPlaceholder}
+            aria-label={t.home.urlAria}
             spellCheck={false}
           />
           {url ? (
             <button
               className="icon-button subtle"
               onClick={() => setUrl("")}
-              aria-label="Borrar enlace"
+              aria-label={t.home.clearLink}
             >
               <X size={17} />
             </button>
           ) : (
             <button className="paste-button" onClick={onPaste}>
-              Pegar
+              {t.home.paste}
             </button>
           )}
           <button
@@ -971,7 +1014,7 @@ function HomeView({
             ) : (
               <Sparkles size={18} />
             )}
-            {analyzing ? "Analizando…" : "Analizar"}
+            {analyzing ? t.home.analyzing : t.home.analyze}
           </button>
         </div>
 
@@ -986,16 +1029,17 @@ function HomeView({
           <span>
             <Check size={12} />
           </span>
-          Incluir la playlist completa si el enlace pertenece a una
+          {t.home.includePlaylist}
         </label>
       </section>
 
-      {analyzing && <AnalysisSkeleton />}
+      {analyzing && <AnalysisSkeleton t={t} />}
 
       {media && !analyzing ? (
         <section className="download-workspace">
-          <MediaPreview media={media} />
+          <MediaPreview t={t} media={media} />
           <DownloadOptions
+            t={t}
             settings={settings}
             setSettings={setSettings}
             appStatus={appStatus}
@@ -1007,14 +1051,14 @@ function HomeView({
       ) : null}
 
       {!media && !analyzing ? (
-        <section className="feature-strip" aria-label="Características">
+        <section className="feature-strip" aria-label={t.home.eyebrow}>
           <div>
             <span>
               <Film size={19} />
             </span>
             <p>
-              <strong>Calidad a tu medida</strong>
-              <small>De 480p a 4K, cuando esté disponible</small>
+              <strong>{t.home.featureQualityTitle}</strong>
+              <small>{t.home.featureQualityCopy}</small>
             </p>
           </div>
           <div>
@@ -1022,8 +1066,8 @@ function HomeView({
               <Headphones size={19} />
             </span>
             <p>
-              <strong>Audio limpio</strong>
-              <small>MP3, M4A u Opus con carátula</small>
+              <strong>{t.home.featureAudioTitle}</strong>
+              <small>{t.home.featureAudioCopy}</small>
             </p>
           </div>
           <div>
@@ -1031,8 +1075,8 @@ function HomeView({
               <Gauge size={19} />
             </span>
             <p>
-              <strong>Rápido y privado</strong>
-              <small>Sin subidas ni servidores intermedios</small>
+              <strong>{t.home.featureSpeedTitle}</strong>
+              <small>{t.home.featureSpeedCopy}</small>
             </p>
           </div>
         </section>
@@ -1042,6 +1086,7 @@ function HomeView({
 }
 
 interface RingtoneModalProps {
+  t: Messages;
   item: DownloadItem;
   outputDir: string;
   onClose: () => void;
@@ -1052,6 +1097,7 @@ interface RingtoneModalProps {
 const ringtoneDurations = [15, 20, 30, 40];
 
 function RingtoneModal({
+  t,
   item,
   outputDir,
   onClose,
@@ -1077,7 +1123,7 @@ function RingtoneModal({
     if (!item.filePath) return;
     const startSeconds = startText.trim() ? parseTimeInput(startText) : 0;
     if (startSeconds == null) {
-      onNotice("error", "El inicio no es válido. Usa segundos (90) o minutos:segundos (1:30).");
+      onNotice("error", t.notices.invalidStart);
       return;
     }
     setCreating(true);
@@ -1091,7 +1137,7 @@ function RingtoneModal({
         fade,
       });
       setCreatedPath(path);
-      onNotice("success", "Tono creado en la carpeta Tonos.");
+      onNotice("success", t.notices.ringtoneCreated);
     } catch (error) {
       onNotice("error", String(error));
     } finally {
@@ -1104,7 +1150,7 @@ function RingtoneModal({
       className="preview-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label={`Crear tono de ${item.title}`}
+      aria-label={t.downloads.ringtoneAria(item.title)}
       onClick={onClose}
     >
       <div
@@ -1113,13 +1159,13 @@ function RingtoneModal({
       >
         <header className="preview-header">
           <div>
-            <p className="eyebrow">CREAR TONO</p>
+            <p className="eyebrow">{t.ringtone.eyebrow}</p>
             <h3>{item.title}</h3>
           </div>
           <button
             className="icon-button subtle"
             onClick={onClose}
-            aria-label="Cerrar creador de tonos"
+            aria-label={t.ringtone.closeAria}
           >
             <X size={18} />
           </button>
@@ -1134,17 +1180,13 @@ function RingtoneModal({
             <div className="ringtone-instructions">
               {preset === "iphone" ? (
                 <p>
-                  <strong>Para instalarlo en tu iPhone:</strong> conecta el
-                  teléfono a la PC, abre iTunes (o la app Dispositivos de
-                  Apple), arrastra el archivo .m4r a la sección Tonos y
-                  sincroniza. Después elígelo en Ajustes → Sonidos.
+                  <strong>{t.ringtone.iphoneInstructionsTitle}</strong>{" "}
+                  {t.ringtone.iphoneInstructions}
                 </p>
               ) : (
                 <p>
-                  <strong>Para instalarlo en tu Android:</strong> copia el
-                  archivo .mp3 al teléfono por USB, dentro de la carpeta
-                  Ringtones (o Alarms para alarmas), y elígelo en Ajustes →
-                  Sonido.
+                  <strong>{t.ringtone.androidInstructionsTitle}</strong>{" "}
+                  {t.ringtone.androidInstructions}
                 </p>
               )}
             </div>
@@ -1154,10 +1196,10 @@ function RingtoneModal({
                 onClick={() => onReveal(createdPath)}
               >
                 <FolderOpen size={16} />
-                Abrir carpeta Tonos
+                {t.ringtone.openTonesFolder}
               </button>
               <button className="secondary-button" onClick={onClose}>
-                Cerrar
+                {t.ringtone.close}
               </button>
             </footer>
           </div>
@@ -1166,7 +1208,7 @@ function RingtoneModal({
             <div
               className="segmented-control"
               role="group"
-              aria-label="Tipo de teléfono"
+              aria-label={t.ringtone.phoneTypeAria}
             >
               <button
                 className={preset === "iphone" ? "active" : ""}
@@ -1186,29 +1228,29 @@ function RingtoneModal({
 
             <div className="option-grid">
               <label>
-                <span>Empieza en</span>
+                <span>{t.ringtone.startsAt}</span>
                 <div className="select-shell">
                   <input
                     className="ringtone-start"
                     value={startText}
                     onChange={(event) => setStartText(event.target.value)}
-                    placeholder="0:00"
-                    aria-label="Momento donde empieza el tono"
+                    placeholder={t.ringtone.startPlaceholder}
+                    aria-label={t.ringtone.startAria}
                     spellCheck={false}
                   />
                 </div>
               </label>
               <label>
-                <span>Duración</span>
+                <span>{t.ringtone.duration}</span>
                 <div className="select-shell">
                   <select
-                    aria-label="Duración del tono"
+                    aria-label={t.ringtone.durationAria}
                     value={duration}
                     onChange={(event) => setDuration(Number(event.target.value))}
                   >
                     {ringtoneDurations.map((value) => (
                       <option key={value} value={value}>
-                        {value} segundos
+                        {t.ringtone.seconds(value)}
                       </option>
                     ))}
                   </select>
@@ -1219,8 +1261,8 @@ function RingtoneModal({
 
             <div className="toggle-list">
               <Toggle
-                label="Suavizar inicio y final"
-                description="Sube y baja el volumen gradualmente"
+                label={t.ringtone.fadeLabel}
+                description={t.ringtone.fadeDesc}
                 checked={fade}
                 onChange={setFade}
               />
@@ -1228,8 +1270,7 @@ function RingtoneModal({
 
             <p className="ringtone-hint">
               <Info size={14} />
-              Escribe dónde empieza la mejor parte (ej. 1:05). El iPhone acepta
-              tonos de hasta 40 segundos; para llamadas lo típico es 30.
+              {t.ringtone.hint}
             </p>
 
             <footer className="preview-footer">
@@ -1243,10 +1284,10 @@ function RingtoneModal({
                 ) : (
                   <BellRing size={16} />
                 )}
-                {creating ? "Creando tono…" : "Crear tono"}
+                {creating ? t.ringtone.creating : t.ringtone.create}
               </button>
               <button className="secondary-button" onClick={onClose}>
-                Cancelar
+                {t.ringtone.cancel}
               </button>
             </footer>
           </>
@@ -1257,6 +1298,8 @@ function RingtoneModal({
 }
 
 interface SearchViewProps {
+  t: Messages;
+  lang: Lang;
   query: string;
   setQuery: (value: string) => void;
   results: SearchResult[];
@@ -1273,13 +1316,6 @@ interface SearchViewProps {
   onOpenExternal: (url: string) => void;
 }
 
-const durationFilters: { id: DurationFilter; label: string }[] = [
-  { id: "all", label: "Todos" },
-  { id: "short", label: "Cortos" },
-  { id: "medium", label: "Medios" },
-  { id: "long", label: "Largos (+30 min)" },
-];
-
 const searchSources: { id: SearchSource; label: string }[] = [
   { id: "youtube", label: "YouTube" },
   { id: "soundcloud", label: "SoundCloud" },
@@ -1287,6 +1323,8 @@ const searchSources: { id: SearchSource; label: string }[] = [
 ];
 
 function SearchView({
+  t,
+  lang,
   query,
   setQuery,
   results,
@@ -1304,6 +1342,13 @@ function SearchView({
 }: SearchViewProps) {
   const [preview, setPreview] = useState<SearchResult | null>(null);
   const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
+
+  const durationFilters: { id: DurationFilter; label: string }[] = [
+    { id: "all", label: t.search.filterAll },
+    { id: "short", label: t.search.filterShort },
+    { id: "medium", label: t.search.filterMedium },
+    { id: "long", label: t.search.filterLong },
+  ];
 
   const visibleResults = useMemo(
     () =>
@@ -1331,12 +1376,9 @@ function SearchView({
     <div className="page search-page">
       <header className="section-header">
         <div>
-          <p className="eyebrow">ENCUENTRA SIN SALIR</p>
-          <h1>Buscar</h1>
-          <p>
-            Escribe un artista, canción o vídeo y descárgalo sin abrir el
-            navegador.
-          </p>
+          <p className="eyebrow">{t.search.eyebrow}</p>
+          <h1>{t.search.title}</h1>
+          <p>{t.search.subtitle}</p>
         </div>
       </header>
 
@@ -1349,15 +1391,15 @@ function SearchView({
             onKeyDown={(event) => {
               if (event.key === "Enter") onSearch();
             }}
-            placeholder="Ej. Ice MC — Think About The Way"
-            aria-label="Qué quieres buscar"
+            placeholder={t.search.placeholder}
+            aria-label={t.search.inputAria}
             spellCheck={false}
           />
           {query ? (
             <button
               className="icon-button subtle"
               onClick={() => setQuery("")}
-              aria-label="Borrar búsqueda"
+              aria-label={t.search.clearSearch}
             >
               <X size={17} />
             </button>
@@ -1372,14 +1414,14 @@ function SearchView({
             ) : (
               <Search size={18} />
             )}
-            {searching ? "Buscando…" : "Buscar"}
+            {searching ? t.search.searching : t.search.searchButton}
           </button>
         </div>
 
         <div
           className="segmented-control search-sources"
           role="group"
-          aria-label="Fuente de búsqueda"
+          aria-label={t.search.sourceAria}
         >
           {searchSources.map((item) => (
             <button
@@ -1394,7 +1436,7 @@ function SearchView({
         </div>
       </section>
 
-      {searching && <SearchSkeleton />}
+      {searching && <SearchSkeleton t={t} />}
 
       {!searching && results.length > 0 && (
         <>
@@ -1411,11 +1453,7 @@ function SearchView({
               ))}
             </div>
             {hiddenCount > 0 && (
-              <p className="filter-hint">
-                {hiddenCount === 1
-                  ? "1 resultado oculto por el filtro"
-                  : `${hiddenCount} resultados ocultos por el filtro`}
-              </p>
+              <p className="filter-hint">{t.search.hiddenByFilter(hiddenCount)}</p>
             )}
           </div>
           <div className="download-list search-results">
@@ -1425,7 +1463,7 @@ function SearchView({
                 {result.thumbnail ? (
                   <img
                     src={result.thumbnail}
-                    alt={`Miniatura de ${result.title}`}
+                    alt={t.home.thumbnailAlt(result.title)}
                     loading="lazy"
                   />
                 ) : (
@@ -1436,7 +1474,7 @@ function SearchView({
                 <div className="download-title-line">
                   <div>
                     <h3>{result.title}</h3>
-                    <p>{result.uploader || "Autor desconocido"}</p>
+                    <p>{result.uploader || t.home.unknownUploader}</p>
                   </div>
                 </div>
                 <div className="result-meta">
@@ -1444,8 +1482,10 @@ function SearchView({
                     <Clock3 size={14} />
                     {formatDuration(result.duration)}
                   </span>
-                  {formatViewCount(result.viewCount) ? (
-                    <span>{formatViewCount(result.viewCount)}</span>
+                  {formatViewCount(result.viewCount, lang, t.search.views) ? (
+                    <span>
+                      {formatViewCount(result.viewCount, lang, t.search.views)}
+                    </span>
                   ) : null}
                   <span>{sourceLabel(result.source)}</span>
                 </div>
@@ -1454,8 +1494,8 @@ function SearchView({
                 <button
                   className="icon-button preview-trigger"
                   onClick={() => setPreview(result)}
-                  aria-label={`Vista previa de ${result.title}`}
-                  title="Vista previa"
+                  aria-label={t.search.previewAria(result.title)}
+                  title={t.search.previewTitle}
                 >
                   <Play size={17} />
                 </button>
@@ -1464,21 +1504,21 @@ function SearchView({
                   onClick={() => onSelectResult(result.url)}
                 >
                   <Download size={16} />
-                  Descargar
+                  {t.search.download}
                 </button>
                 <button
                   className="icon-button quick-download"
                   onClick={() => onQuickDownload(result)}
-                  aria-label={`Descarga rápida de ${result.title}`}
-                  title="Descarga rápida con tus ajustes"
+                  aria-label={t.search.quickDownloadAria(result.title)}
+                  title={t.search.quickDownloadTitle}
                 >
                   <Zap size={17} />
                 </button>
                 <button
                   className="icon-button"
                   onClick={() => onOpenExternal(result.url)}
-                  aria-label={`Abrir ${result.title} en el navegador`}
-                  title="Abrir en el navegador"
+                  aria-label={t.search.openInBrowserAria(result.title)}
+                  title={t.search.openInBrowserTitle}
                 >
                   <ExternalLink size={17} />
                 </button>
@@ -1488,12 +1528,12 @@ function SearchView({
           {!visibleResults.length && (
             <div className="no-results">
               <Search size={24} />
-              <p>El filtro de duración ocultó todos los resultados.</p>
+              <p>{t.search.filterHidAll}</p>
               <button
                 className="text-button"
                 onClick={() => setDurationFilter("all")}
               >
-                Mostrar todos
+                {t.search.showAll}
               </button>
             </div>
           )}
@@ -1504,7 +1544,7 @@ function SearchView({
       {!searching && searchPerformed && !results.length && (
         <div className="no-results">
           <Search size={24} />
-          <p>No encontramos nada con ese texto. Prueba con otras palabras.</p>
+          <p>{t.search.noResults}</p>
         </div>
       )}
 
@@ -1517,14 +1557,11 @@ function SearchView({
               <Search size={36} />
             </span>
           </div>
-          <h2>Encuentra música y vídeos</h2>
-          <p>
-            Busca en YouTube, SoundCloud o Dailymotion y descarga el resultado
-            con un clic.
-          </p>
+          <h2>{t.search.emptyTitle}</h2>
+          <p>{t.search.emptyCopy}</p>
           {history.length > 0 && (
             <div className="search-history">
-              <p className="eyebrow">BÚSQUEDAS RECIENTES</p>
+              <p className="eyebrow">{t.search.recentSearches}</p>
               <div className="history-chips">
                 {history.map((item) => (
                   <button
@@ -1538,7 +1575,7 @@ function SearchView({
                 ))}
               </div>
               <button className="text-button" onClick={onClearHistory}>
-                Borrar historial
+                {t.search.clearHistory}
               </button>
             </div>
           )}
@@ -1550,7 +1587,7 @@ function SearchView({
           className="preview-overlay"
           role="dialog"
           aria-modal="true"
-          aria-label={`Vista previa de ${preview.title}`}
+          aria-label={t.search.previewAria(preview.title)}
           onClick={() => setPreview(null)}
         >
           <div
@@ -1559,13 +1596,13 @@ function SearchView({
           >
             <header className="preview-header">
               <div>
-                <p className="eyebrow">VISTA PREVIA</p>
+                <p className="eyebrow">{t.search.previewEyebrow}</p>
                 <h3>{preview.title}</h3>
               </div>
               <button
                 className="icon-button subtle"
                 onClick={() => setPreview(null)}
-                aria-label="Cerrar vista previa"
+                aria-label={t.search.closePreview}
               >
                 <X size={18} />
               </button>
@@ -1574,7 +1611,7 @@ function SearchView({
               <div className="preview-frame">
                 <iframe
                   src={previewSrc}
-                  title={`Reproductor de ${preview.title}`}
+                  title={t.search.playerTitle(preview.title)}
                   allow="autoplay; encrypted-media; picture-in-picture"
                   allowFullScreen
                 />
@@ -1582,10 +1619,7 @@ function SearchView({
             ) : (
               <div className="preview-unavailable">
                 <Info size={20} />
-                <p>
-                  Esta fuente no permite vista previa integrada. Ábrela en el
-                  navegador para comprobar el contenido.
-                </p>
+                <p>{t.search.previewUnavailable}</p>
               </div>
             )}
             <footer className="preview-footer">
@@ -1598,7 +1632,7 @@ function SearchView({
                 }}
               >
                 <Download size={16} />
-                Sí, descargar este
+                {t.search.yesDownloadThis}
               </button>
               <button
                 className="secondary-button"
@@ -1609,14 +1643,14 @@ function SearchView({
                 }}
               >
                 <Zap size={16} />
-                Descarga rápida
+                {t.search.quickDownload}
               </button>
               <button
                 className="secondary-button"
                 onClick={() => onOpenExternal(preview.url)}
               >
                 <ExternalLink size={16} />
-                Abrir en el navegador
+                {t.search.openInBrowserTitle}
               </button>
             </footer>
           </div>
@@ -1626,9 +1660,9 @@ function SearchView({
   );
 }
 
-function SearchSkeleton() {
+function SearchSkeleton({ t }: { t: Messages }) {
   return (
-    <div className="download-list search-results" aria-label="Buscando">
+    <div className="download-list search-results" aria-label={t.search.searching}>
       {[1, 2, 3].map((row) => (
         <div className="download-row search-skeleton-row" key={row}>
           <div className="skeleton search-thumb-skeleton" />
@@ -1642,9 +1676,9 @@ function SearchSkeleton() {
   );
 }
 
-function AnalysisSkeleton() {
+function AnalysisSkeleton({ t }: { t: Messages }) {
   return (
-    <section className="analysis-skeleton" aria-label="Analizando enlace">
+    <section className="analysis-skeleton" aria-label={t.home.skeletonLabel}>
       <div className="skeleton thumbnail-skeleton" />
       <div className="skeleton-copy">
         <div className="skeleton line short" />
@@ -1652,19 +1686,19 @@ function AnalysisSkeleton() {
         <div className="skeleton line medium" />
         <p>
           <LoaderCircle className="spin" size={16} />
-          Consultando formatos y calidades disponibles…
+          {t.home.skeletonCopy}
         </p>
       </div>
     </section>
   );
 }
 
-function MediaPreview({ media }: { media: MediaInfo }) {
+function MediaPreview({ t, media }: { t: Messages; media: MediaInfo }) {
   return (
     <article className="media-preview">
       <div className="media-art">
         {media.thumbnail ? (
-          <img src={media.thumbnail} alt={`Miniatura de ${media.title}`} />
+          <img src={media.thumbnail} alt={t.home.thumbnailAlt(media.title)} />
         ) : (
           <div className="media-art-placeholder">
             <Film size={42} />
@@ -1676,11 +1710,11 @@ function MediaPreview({ media }: { media: MediaInfo }) {
       <div className="media-copy">
         <p className="eyebrow">
           {media.isPlaylist
-            ? `${media.playlistCount ?? "Varias"} piezas`
-            : "ENLACE LISTO"}
+            ? t.home.pieces(String(media.playlistCount ?? t.home.several))
+            : t.home.linkReady}
         </p>
         <h2>{media.title}</h2>
-        <p className="media-uploader">{media.uploader || "Autor desconocido"}</p>
+        <p className="media-uploader">{media.uploader || t.home.unknownUploader}</p>
         <div className="media-meta">
           <span>
             <Clock3 size={15} />
@@ -1689,8 +1723,8 @@ function MediaPreview({ media }: { media: MediaInfo }) {
           <span>
             <CircleGauge size={15} />
             {media.resolutions.length
-              ? `Hasta ${Math.max(...media.resolutions)}p`
-              : "Calidad automática"}
+              ? t.home.upTo(Math.max(...media.resolutions))
+              : t.home.autoQuality}
           </span>
         </div>
       </div>
@@ -1699,6 +1733,7 @@ function MediaPreview({ media }: { media: MediaInfo }) {
 }
 
 interface DownloadOptionsProps {
+  t: Messages;
   settings: UserSettings;
   setSettings: (patch: Partial<UserSettings>) => void;
   appStatus: AppStatus | null;
@@ -1708,6 +1743,7 @@ interface DownloadOptionsProps {
 }
 
 function DownloadOptions({
+  t,
   settings,
   setSettings,
   appStatus,
@@ -1718,7 +1754,7 @@ function DownloadOptions({
   const qualities =
     settings.kind === "video"
       ? [
-          { value: "best", label: "Máxima" },
+          { value: "best", label: qualityLabel("best", "video") },
           ...["2160", "1440", "1080", "720", "480"]
             .filter(
               (quality) =>
@@ -1729,7 +1765,7 @@ function DownloadOptions({
         ]
       : ["best", "320", "256", "192", "128"].map((value) => ({
           value,
-          label: value === "best" ? "Máxima" : `${value} kbps`,
+          label: qualityLabel(value, "audio"),
         }));
 
   return (
@@ -1737,7 +1773,7 @@ function DownloadOptions({
       <div
         className="segmented-control"
         role="group"
-        aria-label="Tipo de descarga"
+        aria-label={t.home.downloadKindAria}
       >
         <button
           className={settings.kind === "video" ? "active" : ""}
@@ -1745,7 +1781,7 @@ function DownloadOptions({
           onClick={() => setSettings({ kind: "video" })}
         >
           <FileVideo2 size={17} />
-          Vídeo
+          {t.home.video}
         </button>
         <button
           className={settings.kind === "audio" ? "active" : ""}
@@ -1753,16 +1789,16 @@ function DownloadOptions({
           onClick={() => setSettings({ kind: "audio" })}
         >
           <FileAudio2 size={17} />
-          Solo audio
+          {t.home.audioOnly}
         </button>
       </div>
 
       <div className="option-grid">
         <label>
-          <span>Calidad</span>
+          <span>{t.home.quality}</span>
           <div className="select-shell">
             <select
-              aria-label="Calidad de descarga"
+              aria-label={t.home.qualityAria}
               value={
                 settings.kind === "video"
                   ? settings.videoQuality
@@ -1790,10 +1826,10 @@ function DownloadOptions({
           </div>
         </label>
         <label>
-          <span>Formato</span>
+          <span>{t.home.format}</span>
           <div className="select-shell">
             <select
-              aria-label="Formato de descarga"
+              aria-label={t.home.formatAria}
               value={
                 settings.kind === "video"
                   ? settings.videoFormat
@@ -1828,21 +1864,21 @@ function DownloadOptions({
       <div className="toggle-list">
         {settings.kind === "video" && (
           <Toggle
-            label="Subtítulos"
-            description="Español o inglés, cuando existan"
+            label={t.home.subtitles}
+            description={t.home.subtitlesDesc}
             checked={settings.subtitles}
             onChange={(checked) => setSettings({ subtitles: checked })}
           />
         )}
         <Toggle
-          label="Metadatos"
-          description="Título, autor y capítulos"
+          label={t.home.metadata}
+          description={t.home.metadataDesc}
           checked={settings.embedMetadata}
           onChange={(checked) => setSettings({ embedMetadata: checked })}
         />
         <Toggle
-          label="Carátula"
-          description="Miniatura incrustada en el archivo"
+          label={t.home.coverArt}
+          description={t.home.coverArtDesc}
           checked={settings.embedThumbnail}
           onChange={(checked) => setSettings({ embedThumbnail: checked })}
         />
@@ -1853,13 +1889,13 @@ function DownloadOptions({
           <Folder size={18} />
         </span>
         <div>
-          <small>Guardar en</small>
+          <small>{t.home.saveTo}</small>
           <strong title={settings.downloadDir}>
-            {settings.downloadDir || "Elige una carpeta"}
+            {settings.downloadDir || t.home.chooseFolder}
           </strong>
         </div>
         <button className="text-button" onClick={onChooseDirectory}>
-          Cambiar
+          {t.home.change}
         </button>
       </div>
 
@@ -1869,7 +1905,7 @@ function DownloadOptions({
         disabled={!appStatus?.ytDlpReady}
       >
         <Download size={20} />
-        Descargar ahora
+        {t.home.downloadNow}
         <span>
           {settings.kind === "video"
             ? `${settings.videoFormat.toUpperCase()} · ${qualityLabel(
@@ -1914,6 +1950,8 @@ function Toggle({
 }
 
 interface DownloadsViewProps {
+  t: Messages;
+  lang: Lang;
   downloads: DownloadItem[];
   downloadDir: string;
   onCancel: (id: string) => void;
@@ -1925,6 +1963,8 @@ interface DownloadsViewProps {
 }
 
 function DownloadsView({
+  t,
+  lang,
   downloads,
   downloadDir,
   onCancel,
@@ -1965,14 +2005,14 @@ function DownloadsView({
     <div className="page downloads-page">
       <header className="section-header">
         <div>
-          <p className="eyebrow">TU BIBLIOTECA LOCAL</p>
-          <h1>Descargas</h1>
-          <p>Todo lo que guardas, ordenado y a la vista.</p>
+          <p className="eyebrow">{t.downloads.eyebrow}</p>
+          <h1>{t.downloads.title}</h1>
+          <p>{t.downloads.subtitle}</p>
         </div>
         {downloads.length > 0 && (
           <button className="secondary-button" onClick={onClear}>
             <Trash2 size={16} />
-            Limpiar finalizadas
+            {t.downloads.clearFinished}
           </button>
         )}
       </header>
@@ -1984,7 +2024,7 @@ function DownloadsView({
           </span>
           <p>
             <strong>{activeCount}</strong>
-            <small>En curso</small>
+            <small>{t.downloads.active}</small>
           </p>
         </div>
         <div>
@@ -1993,7 +2033,7 @@ function DownloadsView({
           </span>
           <p>
             <strong>{completedCount}</strong>
-            <small>Completadas</small>
+            <small>{t.downloads.completed}</small>
           </p>
         </div>
         <button
@@ -2004,8 +2044,8 @@ function DownloadsView({
             <FolderOpen size={19} />
           </span>
           <p>
-            <strong>Carpeta de descargas</strong>
-            <small>{downloadDir || "Sin configurar"}</small>
+            <strong>{t.downloads.downloadsFolder}</strong>
+            <small>{downloadDir || t.downloads.notConfigured}</small>
           </p>
           <ExternalLink size={16} />
         </button>
@@ -2016,9 +2056,9 @@ function DownloadsView({
           <div className="download-toolbar">
             <div className="filter-tabs">
               {[
-                ["all", "Todas"],
-                ["active", "En curso"],
-                ["completed", "Completadas"],
+                ["all", t.downloads.filterAll],
+                ["active", t.downloads.active],
+                ["completed", t.downloads.completed],
               ].map(([value, label]) => (
                 <button
                   key={value}
@@ -2034,10 +2074,10 @@ function DownloadsView({
             <label className="search-field">
               <Search size={16} />
               <input
-                aria-label="Buscar descargas"
+                aria-label={t.downloads.searchAria}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Buscar"
+                placeholder={t.downloads.searchPlaceholder}
               />
             </label>
           </div>
@@ -2046,6 +2086,8 @@ function DownloadsView({
             {visible.map((item) => (
               <DownloadRow
                 key={item.id}
+                t={t}
+                lang={lang}
                 item={item}
                 onCancel={onCancel}
                 onRepair={onRepair}
@@ -2056,7 +2098,7 @@ function DownloadsView({
             {!visible.length && (
               <div className="no-results">
                 <Search size={24} />
-                <p>No hay descargas que coincidan con este filtro.</p>
+                <p>{t.downloads.noMatches}</p>
               </div>
             )}
           </div>
@@ -2070,13 +2112,11 @@ function DownloadsView({
               <ArrowDownToLine size={36} />
             </span>
           </div>
-          <h2>Tu cola está esperando</h2>
-          <p>
-            Pega un enlace, elige la calidad y JpkkenVideker se ocupa del resto.
-          </p>
+          <h2>{t.downloads.emptyTitle}</h2>
+          <p>{t.downloads.emptyCopy}</p>
           <button className="primary-button" onClick={onGoHome}>
             <Link2 size={17} />
-            Añadir un enlace
+            {t.downloads.addLink}
           </button>
         </div>
       )}
@@ -2085,12 +2125,16 @@ function DownloadsView({
 }
 
 function DownloadRow({
+  t,
+  lang,
   item,
   onCancel,
   onRepair,
   onReveal,
   onCreateRingtone,
 }: {
+  t: Messages;
+  lang: Lang;
   item: DownloadItem;
   onCancel: (id: string) => void;
   onRepair: (item: DownloadItem) => void;
@@ -2104,7 +2148,7 @@ function DownloadRow({
     <article className={`download-row status-${item.status}`}>
       <div className="download-thumb">
         {item.thumbnail ? (
-          <img src={item.thumbnail} alt={`Miniatura de ${item.title}`} />
+          <img src={item.thumbnail} alt={t.home.thumbnailAlt(item.title)} />
         ) : (
           <Film size={26} />
         )}
@@ -2128,7 +2172,7 @@ function DownloadRow({
           <span className={`download-status ${item.status}`}>
             {item.status === "completed" && <Check size={13} />}
             {item.status === "failed" && <AlertCircle size={13} />}
-            {statusText(item.status)}
+            {statusText(item.status, t)}
           </span>
         </div>
         {active ? (
@@ -2138,10 +2182,10 @@ function DownloadRow({
             </div>
             <div className="progress-meta">
               <strong>{Math.round(item.progress)}%</strong>
-              <span>{item.speed || "Preparando…"}</span>
-              {item.eta && <span>Quedan {item.eta}</span>}
+              <span>{item.speed || t.downloads.preparing}</span>
+              {item.eta && <span>{t.downloads.etaLeft(item.eta)}</span>}
               {item.status === "retrying" && item.retryAttempt > 0 ? (
-                <span>Intento {item.retryAttempt} de 3</span>
+                <span>{t.downloads.retryAttempt(item.retryAttempt, 3)}</span>
               ) : null}
             </div>
           </div>
@@ -2160,7 +2204,7 @@ function DownloadRow({
             ) : null}
             {item.technicalDetails ? (
               <details>
-                <summary>Diagnóstico técnico</summary>
+                <summary>{t.downloads.technicalDetails}</summary>
                 <pre>{item.technicalDetails}</pre>
               </details>
             ) : null}
@@ -2168,7 +2212,7 @@ function DownloadRow({
         ) : (
           <p className="completed-at">
             <History size={14} />
-            {new Intl.DateTimeFormat("es", {
+            {new Intl.DateTimeFormat(lang, {
               dateStyle: "medium",
               timeStyle: "short",
             }).format(new Date(item.createdAt))}
@@ -2180,8 +2224,8 @@ function DownloadRow({
           <button
             className="icon-button danger"
             onClick={() => onCancel(item.id)}
-            aria-label="Cancelar descarga"
-            title="Cancelar"
+            aria-label={t.downloads.cancelAria}
+            title={t.downloads.cancel}
           >
             <Square size={15} fill="currentColor" />
           </button>
@@ -2191,8 +2235,8 @@ function DownloadRow({
               <button
                 className="icon-button ringtone-trigger"
                 onClick={() => onCreateRingtone(item)}
-                aria-label={`Crear tono de ${item.title}`}
-                title="Crear tono para iPhone o Android"
+                aria-label={t.downloads.ringtoneAria(item.title)}
+                title={t.downloads.ringtoneTitle}
               >
                 <BellRing size={17} />
               </button>
@@ -2200,8 +2244,8 @@ function DownloadRow({
             <button
               className="icon-button"
               onClick={() => item.filePath && onReveal(item.filePath)}
-              aria-label="Abrir archivo"
-              title="Abrir archivo"
+              aria-label={t.downloads.openFile}
+              title={t.downloads.openFile}
             >
               <FolderOpen size={17} />
             </button>
@@ -2220,8 +2264,8 @@ function DownloadRow({
                     ].join("\n\n"),
                   )
                 }
-                aria-label="Copiar diagnóstico"
-                title="Copiar diagnóstico"
+                aria-label={t.downloads.copyDiagnostic}
+                title={t.downloads.copyDiagnostic}
               >
                 <Copy size={16} />
               </button>
@@ -2229,11 +2273,11 @@ function DownloadRow({
             <button
               className="repair-button"
               onClick={() => onRepair(item)}
-              aria-label="Reparar descarga"
-              title="Reintentar con ajustes seguros"
+              aria-label={t.downloads.repair}
+              title={t.downloads.repairTitle}
             >
               <Wrench size={15} />
-              Reparar
+              {t.downloads.repair}
             </button>
           </>
         )}
@@ -2243,6 +2287,7 @@ function DownloadRow({
 }
 
 interface SettingsViewProps {
+  t: Messages;
   settings: UserSettings;
   appStatus: AppStatus | null;
   setSettings: (patch: Partial<UserSettings>) => void;
@@ -2251,9 +2296,14 @@ interface SettingsViewProps {
   engineUpdate: EngineUpdateInfo | null;
   updatingEngine: boolean;
   onUpdateEngine: () => void;
+  appUpdate: AppUpdateInfo | null;
+  checkingAppUpdate: boolean;
+  onCheckAppUpdate: () => void;
+  onOpenUrl: (url: string) => void;
 }
 
 function SettingsView({
+  t,
   settings,
   appStatus,
   setSettings,
@@ -2262,14 +2312,18 @@ function SettingsView({
   engineUpdate,
   updatingEngine,
   onUpdateEngine,
+  appUpdate,
+  checkingAppUpdate,
+  onCheckAppUpdate,
+  onOpenUrl,
 }: SettingsViewProps) {
   return (
     <div className="page settings-page">
       <header className="section-header">
         <div>
-          <p className="eyebrow">HAZLA TUYA</p>
-          <h1>Ajustes</h1>
-          <p>Preferencias simples que se recuerdan entre sesiones.</p>
+          <p className="eyebrow">{t.settings.eyebrow}</p>
+          <h1>{t.settings.title}</h1>
+          <p>{t.settings.subtitle}</p>
         </div>
       </header>
 
@@ -2279,26 +2333,26 @@ function SettingsView({
             <Folder size={19} />
           </span>
           <div>
-            <h2>Descargas</h2>
-            <p>Destino y rendimiento predeterminados</p>
+            <h2>{t.settings.downloadsSection}</h2>
+            <p>{t.settings.downloadsSectionSub}</p>
           </div>
         </div>
         <div className="settings-card">
           <div className="settings-row">
             <div>
-              <strong>Carpeta de destino</strong>
+              <strong>{t.settings.destinationFolder}</strong>
               <p className="path-copy">{settings.downloadDir}</p>
             </div>
             <button className="secondary-button" onClick={onChooseDirectory}>
               <FolderOpen size={16} />
-              Elegir carpeta
+              {t.settings.pickFolder}
             </button>
           </div>
           <div className="settings-divider" />
           <div className="settings-row">
             <div>
-              <strong>Fragmentos simultáneos</strong>
-              <p>Acelera vídeos segmentados sin saturar la conexión.</p>
+              <strong>{t.settings.fragments}</strong>
+              <p>{t.settings.fragmentsDesc}</p>
             </div>
             <div className="stepper">
               <button
@@ -2337,15 +2391,15 @@ function SettingsView({
             <ShieldCheck size={19} />
           </span>
           <div>
-            <h2>Compatibilidad</h2>
-            <p>Para contenido al que ya tienes acceso legítimo</p>
+            <h2>{t.settings.compatSection}</h2>
+            <p>{t.settings.compatSectionSub}</p>
           </div>
         </div>
         <div className="settings-card">
           <div className="settings-toggle-list">
             <Toggle
-              label="Compatibilidad automática"
-              description="Detecta el tipo de fallo y prueba hasta dos ajustes conservadores."
+              label={t.settings.autoCompat}
+              description={t.settings.autoCompatDesc}
               checked={settings.compatibilityMode}
               onChange={(checked) =>
                 setSettings({ compatibilityMode: checked })
@@ -2353,15 +2407,15 @@ function SettingsView({
             />
             <div className="settings-divider" />
             <Toggle
-              label="Motor JavaScript Deno"
-              description="Mejora la compatibilidad con los reproductores modernos de YouTube."
+              label={t.settings.denoEngine}
+              description={t.settings.denoEngineDesc}
               checked={settings.useDeno}
               onChange={(checked) => setSettings({ useDeno: checked })}
             />
             <div className="settings-divider" />
             <Toggle
-              label="Evitar duplicados"
-              description="Registra lo descargado para no repetir el mismo contenido."
+              label={t.settings.avoidDuplicates}
+              description={t.settings.avoidDuplicatesDesc}
               checked={settings.avoidDuplicates}
               onChange={(checked) =>
                 setSettings({ avoidDuplicates: checked })
@@ -2371,15 +2425,12 @@ function SettingsView({
           <div className="settings-divider" />
           <label className="settings-row">
             <div>
-              <strong>Usar sesión del navegador</strong>
-              <p>
-                Útil para vídeos privados propios o contenido con restricción de
-                edad. JpkkenVideker no guarda tus cookies.
-              </p>
+              <strong>{t.settings.browserSession}</strong>
+              <p>{t.settings.browserSessionDesc}</p>
             </div>
             <div className="select-shell settings-select">
               <select
-                aria-label="Navegador para usar la sesión"
+                aria-label={t.settings.browserAria}
                 value={settings.browserCookies}
                 onChange={(event) =>
                   setSettings({
@@ -2388,7 +2439,7 @@ function SettingsView({
                   })
                 }
               >
-                <option value="none">No usar</option>
+                <option value="none">{t.settings.browserNone}</option>
                 <option value="edge">Microsoft Edge</option>
                 <option value="chrome">Google Chrome</option>
                 <option value="firefox">Firefox</option>
@@ -2410,15 +2461,15 @@ function SettingsView({
             )}
           </span>
           <div>
-            <h2>Apariencia</h2>
-            <p>Una interfaz cómoda a cualquier hora</p>
+            <h2>{t.settings.appearanceSection}</h2>
+            <p>{t.settings.appearanceSectionSub}</p>
           </div>
         </div>
         <div className="settings-card">
           <div className="settings-row">
             <div>
-              <strong>Tema de la aplicación</strong>
-              <p>Cambia al instante, sin reiniciar.</p>
+              <strong>{t.settings.theme}</strong>
+              <p>{t.settings.themeDesc}</p>
             </div>
             <div className="theme-switcher">
               <button
@@ -2427,7 +2478,7 @@ function SettingsView({
                 onClick={() => setSettings({ theme: "dark" })}
               >
                 <Moon size={15} />
-                Oscuro
+                {t.settings.dark}
               </button>
               <button
                 className={settings.theme === "light" ? "active" : ""}
@@ -2435,8 +2486,31 @@ function SettingsView({
                 onClick={() => setSettings({ theme: "light" })}
               >
                 <Sun size={15} />
-                Claro
+                {t.settings.light}
               </button>
+            </div>
+          </div>
+          <div className="settings-divider" />
+          <div className="settings-row">
+            <div>
+              <strong>{t.settings.language}</strong>
+              <p>{t.settings.languageDesc}</p>
+            </div>
+            <div className="select-shell settings-select">
+              <select
+                aria-label={t.settings.languageAria}
+                value={settings.language}
+                onChange={(event) =>
+                  setSettings({ language: event.target.value as Lang })
+                }
+              >
+                {Object.entries(languageNames).map(([code, name]) => (
+                  <option key={code} value={code}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={16} />
             </div>
           </div>
         </div>
@@ -2448,32 +2522,35 @@ function SettingsView({
             <CircleGauge size={19} />
           </span>
           <div>
-            <h2>Componentes</h2>
-            <p>Estado del motor multimedia local</p>
+            <h2>{t.settings.componentsSection}</h2>
+            <p>{t.settings.componentsSectionSub}</p>
           </div>
         </div>
         <div className="settings-card engine-settings">
           <EngineRow
+            t={t}
             name="yt-dlp"
             ready={Boolean(appStatus?.ytDlpReady)}
             version={
               appStatus?.ytDlpVersion
                 ? `${appStatus.ytDlpVersion} · ${
                     appStatus.engineSource === "updated"
-                      ? "actualizado"
-                      : "incluido"
+                      ? t.settings.engineUpdated
+                      : t.settings.engineBundled
                   }`
                 : null
             }
           />
           <div className="settings-divider" />
           <EngineRow
+            t={t}
             name="FFmpeg"
             ready={Boolean(appStatus?.ffmpegReady)}
             version={appStatus?.ffmpegVersion}
           />
           <div className="settings-divider" />
           <EngineRow
+            t={t}
             name="Deno"
             ready={Boolean(appStatus?.denoReady)}
             version={appStatus?.denoVersion}
@@ -2487,11 +2564,11 @@ function SettingsView({
                   setSettings({ autoUpdateEngine: event.target.checked })
                 }
               />
-              Buscar actualizaciones verificadas cada semana
+              {t.settings.weeklyUpdates}
             </label>
             {engineUpdate?.updateAvailable ? (
               <p className="update-available">
-                Nueva versión disponible: {engineUpdate.latestVersion}
+                {t.settings.newEngineVersion(engineUpdate.latestVersion)}
               </p>
             ) : null}
             <div>
@@ -2506,18 +2583,65 @@ function SettingsView({
                   className={updatingEngine ? "spin" : ""}
                 />
                 {updatingEngine
-                  ? "Verificando…"
+                  ? t.settings.verifying
                   : engineUpdate?.updateAvailable
-                    ? "Actualizar motor"
-                    : "Buscar actualización"}
+                    ? t.settings.updateEngine
+                    : t.settings.checkUpdate}
               </button>
               <button
                 className="refresh-engine inline"
                 onClick={onRefreshStatus}
                 disabled={updatingEngine}
               >
-                Comprobar componentes
+                {t.settings.checkComponents}
               </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <div className="settings-heading">
+          <span>
+            <Download size={19} />
+          </span>
+          <div>
+            <h2>{t.settings.appVersionSection}</h2>
+            <p>{t.settings.appVersionSub}</p>
+          </div>
+        </div>
+        <div className="settings-card">
+          <div className="settings-row">
+            <div>
+              <strong>JpkkenVideker 0.1.0</strong>
+              <p>
+                {appUpdate?.updateAvailable
+                  ? t.settings.appUpdateAvailable(appUpdate.latestVersion)
+                  : t.settings.appUpToDate}
+              </p>
+            </div>
+            <div>
+              <button
+                className="secondary-button"
+                onClick={onCheckAppUpdate}
+                disabled={checkingAppUpdate}
+                aria-busy={checkingAppUpdate}
+              >
+                <RefreshCw
+                  size={15}
+                  className={checkingAppUpdate ? "spin" : ""}
+                />
+                {checkingAppUpdate ? t.settings.verifying : t.settings.checkUpdate}
+              </button>
+              {appUpdate?.updateAvailable ? (
+                <button
+                  className="primary-button"
+                  onClick={() => onOpenUrl(appUpdate.downloadUrl)}
+                >
+                  <Download size={15} />
+                  {t.settings.downloadUpdate}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2528,20 +2652,22 @@ function SettingsView({
           <img src={logo} alt="" />
           <div>
             <strong>JpkkenVideker 0.1.0</strong>
-            <span>{runningInTauri ? "Aplicación de escritorio" : "Vista de diseño web"}</span>
+            <span>{runningInTauri ? t.settings.desktopApp : t.settings.designView}</span>
           </div>
         </div>
-        <p>Hecha para guardar con criterio, no para saltarse protecciones.</p>
+        <p>{t.settings.aboutTagline}</p>
       </div>
     </div>
   );
 }
 
 function EngineRow({
+  t,
   name,
   ready,
   version,
 }: {
+  t: Messages;
   name: string;
   ready: boolean;
   version?: string | null;
@@ -2551,10 +2677,10 @@ function EngineRow({
       <span className={`status-dot ${ready ? "ready" : ""}`} />
       <div>
         <strong>{name}</strong>
-        <p>{version || (ready ? "Disponible" : "No encontrado")}</p>
+        <p>{version || (ready ? t.settings.available : t.settings.notFound)}</p>
       </div>
       <span className={`health-pill ${ready ? "ready" : ""}`}>
-        {ready ? "Listo" : "Revisar"}
+        {ready ? t.settings.ready : t.settings.review}
       </span>
     </div>
   );
